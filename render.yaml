@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: trading-signal-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: APP_TIMEZONE
+        value: Europe/Berlin
+      - key: DATA_PROVIDER
+        value: yfinance
+      - key: DATABASE_URL
+        sync: false
+
+  # Für dauerhafte Datenhaltung später PostgreSQL und einen bezahlten Worker/Cron verwenden.
+  # SQLite auf einem flüchtigen Render-Dateisystem ist nicht produktionsfest.
