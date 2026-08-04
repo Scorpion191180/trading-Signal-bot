@@ -26,5 +26,5 @@ jobs:
       - name: Offline-Tests ausführen
         env:
           DATA_PROVIDER: mock
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
         run: pytest -q

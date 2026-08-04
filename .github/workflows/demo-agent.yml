@@ -19,5 +19,5 @@ jobs:
       - name: Deterministischen Demo-Agenten starten
         env:
           DATA_PROVIDER: mock
-          DATABASE_URL: sqlite:///data/demo-agent.db
+          DATABASE_URL: "sqlite:///data/demo-agent.db"
         run: python -m src.agent.cli
