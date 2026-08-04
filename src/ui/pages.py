@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pandas as pd
 import streamlit as st
@@ -12,9 +12,14 @@ import streamlit as st
 from src.agent import TradingAgent
 from src.analysis import SignalAction, add_indicators, analyze_signal
 from src.config import STRATEGIES, WEIGHTS, AppSettings
-from src.data import MarketDataProvider, MarketDataRequest, ProviderError
+from src.data import (
+    MarketDataProvider,
+    MarketDataRequest,
+    ProviderError,
+    recommended_period,
+    source_name,
+)
 from src.database.repositories import DataStore, PortfolioError
-from src.news import MockNewsProvider
 from src.portfolio.backtest import run_backtest
 from src.portfolio.risk import calculate_position_size
 
@@ -29,7 +34,10 @@ def _money(value: float) -> str:
 
 def _safe_history(provider: MarketDataProvider, symbol: str, interval: str, period: str, prepost: bool = False) -> pd.DataFrame:
     try:
-        return provider.history(MarketDataRequest(symbol, interval, period, prepost))
+        frame = provider.history(MarketDataRequest(symbol, interval, period, prepost))
+        if reason := frame.attrs.get("fallback_reason"):
+            st.warning(f"Primärquelle nicht verwendbar; echte Ersatzquelle aktiv. Details: {reason}")
+        return frame
     except ProviderError as exc:
         LOGGER.exception("Datenabruf für %s fehlgeschlagen", symbol)
         st.error(str(exc))
@@ -49,7 +57,10 @@ def overview(store: DataStore, provider: MarketDataProvider) -> None:
     columns[0].metric("Freies Kapital", _money(sum(item.cash for item in portfolios)))
     last_run = store.last_agent_run()
     columns[1].metric("Letzter Agentenlauf", last_run.status if last_run else "Noch keiner")
-    st.caption(f"Datenquelle: {provider.name}" + (" · eindeutig als Demo" if provider.is_demo else " · nicht garantiert Echtzeit"))
+    st.caption(
+        f"Datenquellen: {provider.name}"
+        + (" · eindeutig als Offline-Test" if provider.is_demo else " · echte Marktdaten, teils verzögert")
+    )
     signals = store.list_signals(12)
     st.subheader("Aktuelle Signale")
     if not signals:
@@ -212,23 +223,49 @@ def agent_portfolio(store: DataStore, agent: TradingAgent) -> None:
         with st.expander(f"{position.symbol} · {position.quantity:g} · {pnl:+.2f} €"):
             st.write(f"Einstieg {position.average_price:.4f} · letzter Kurs {position.current_price:.4f}")
             st.write(f"Stop {position.stop_loss:.4f} · Ziel {position.take_profit:.4f}")
-            st.caption(position.entry_reason)
+            st.caption(
+                f"Einstiegsquelle: {position.entry_provider} · letzter Kurs: {position.last_provider} · "
+                f"{position.entry_reason}"
+            )
             quantity = st.number_input(
                 "Zu verkaufende Stückzahl", 0.001, float(position.quantity), float(position.quantity), key=f"sell-qty-{position.id}"
             )
             if st.button("Virtuellen Verkauf ausführen", key=f"sell-{position.id}"):
                 try:
+                    watchlist_item = next(
+                        (item for item in store.list_watchlist() if item.symbol == position.symbol),
+                        None,
+                    )
+                    interval = watchlist_item.interval if watchlist_item else "5m"
+                    frame = agent.provider.history(
+                        MarketDataRequest(
+                            position.symbol,
+                            interval,
+                            recommended_period(interval),
+                            watchlist_item.extended_hours if watchlist_item else False,
+                        )
+                    )
+                    data_timestamp = pd.Timestamp(frame.index[-1]).to_pydatetime()
+                    maximum_age = 96 * 60 if interval == "1d" else agent.settings.stale_after_minutes
+                    age_minutes = (datetime.now(UTC) - data_timestamp).total_seconds() / 60
+                    if age_minutes > maximum_age:
+                        raise PortfolioError(
+                            f"Manueller Verkauf blockiert: Kursdaten sind {age_minutes:.0f} Minuten alt."
+                        )
+                    actual_provider = source_name(frame, agent.provider)
                     store.close_position(
                         portfolio_id=portfolio.id,
                         symbol=position.symbol,
-                        market_price=position.current_price,
+                        market_price=float(frame["close"].iloc[-1]),
                         reason="Manueller virtueller Verkauf",
                         signal_score=50,
+                        provider=actual_provider,
+                        is_demo=agent.provider.is_demo,
                         quantity=quantity,
                     )
                     st.success("Virtueller Verkauf gebucht.")
                     st.rerun()
-                except PortfolioError as exc:
+                except (PortfolioError, ProviderError) as exc:
                     st.error(str(exc))
     with st.expander("Depot zurücksetzen"):
         capital = st.number_input("Neues Startkapital", min_value=100.0, value=float(portfolio.initial_capital), step=100.0)
@@ -246,7 +283,7 @@ def analysis_page(store: DataStore, provider: MarketDataProvider, settings: AppS
     c1, c2 = st.columns(2)
     interval = c1.selectbox("Zeitebene", ["1m", "5m", "15m", "30m", "1h", "1d"], index=1)
     strategy_name = c2.selectbox("Strategie", list(STRATEGIES))
-    period = "1y" if interval == "1d" else "5d"
+    period = recommended_period(interval)
     frame = _safe_history(provider, symbol, interval, period)
     if frame.empty:
         return
@@ -254,7 +291,7 @@ def analysis_page(store: DataStore, provider: MarketDataProvider, settings: AppS
         symbol,
         frame,
         STRATEGIES[strategy_name],
-        provider=provider.name,
+        provider=source_name(frame, provider),
         stale_after_minutes=96 * 60 if interval == "1d" else settings.stale_after_minutes,
     )
     store.record_signal(result)
@@ -323,6 +360,8 @@ def analysis_page(store: DataStore, provider: MarketDataProvider, settings: AppS
                     reason="Bestätigtes experimentelles Kaufsignal",
                     signal_score=result.score,
                     weight_version=result.weight_version,
+                    provider=result.provider,
+                    is_demo=provider.is_demo,
                 )
                 st.success("Virtueller Kauf ausgeführt. Keine echte Order wurde platziert.")
                 st.rerun()
@@ -341,12 +380,12 @@ def scanner(store: DataStore, provider: MarketDataProvider, settings: AppSetting
     items = store.list_watchlist()
     for index, item in enumerate(items):
         try:
-            frame = provider.history(MarketDataRequest(item.symbol, item.interval, "1y" if item.interval == "1d" else "5d"))
+            frame = provider.history(MarketDataRequest(item.symbol, item.interval, recommended_period(item.interval)))
             result = analyze_signal(
                 item.symbol,
                 frame,
                 STRATEGIES["Normal"],
-                provider=provider.name,
+                provider=source_name(frame, provider),
                 stale_after_minutes=96 * 60 if item.interval == "1d" else settings.stale_after_minutes,
             )
             indicator_data = add_indicators(frame)
@@ -371,16 +410,11 @@ def scanner(store: DataStore, provider: MarketDataProvider, settings: AppSetting
 
 def news_page(store: DataStore) -> None:
     st.title("Nachrichten")
-    st.warning("Version 0.1 nutzt hier ausschließlich eindeutig markierte Demo-Meldungen – nicht aktuell, nicht vollständig.")
-    provider = MockNewsProvider()
-    for item in provider.get_news([value.symbol for value in store.list_watchlist()]):
-        with st.container(border=True):
-            st.write(f"**{item.title}**")
-            st.write(item.summary)
-            st.caption(
-                f"{item.source} · {item.published_at:%Y-%m-%d %H:%M UTC} · {item.sentiment} · "
-                f"Einfluss {item.impact:.1f} · Glaubwürdigkeit {item.credibility:.1f} · DEMO"
-            )
+    st.info(
+        "Es ist noch keine belastbare echte Nachrichtenquelle konfiguriert. Deshalb zeigt die App hier keine "
+        "erfundenen Demo-Meldungen; die Nachrichtenkomponente der Bewertung bleibt neutral."
+    )
+    st.caption(f"Beobachtete Symbole: {', '.join(value.symbol for value in store.list_watchlist())}")
 
 
 def strategies_page() -> None:
@@ -410,7 +444,7 @@ def backtesting_page(store: DataStore, provider: MarketDataProvider) -> None:
     if not st.button("Backtest starten", type="primary", width="stretch"):
         st.caption("Signale werden auf Kerze t gebildet und frühestens am Open von t+1 ausgeführt.")
         return
-    frame = _safe_history(provider, symbol, interval, "2y" if interval == "1d" else "60d")
+    frame = _safe_history(provider, symbol, interval, recommended_period(interval, backtest=True))
     if frame.empty:
         return
     try:
@@ -459,11 +493,18 @@ def trade_journal(store: DataStore) -> None:
     for trade in trades:
         with st.expander(f"#{trade.id} · {trade.symbol} · {trade.strategy} · {trade.pnl_eur:+.2f} €"):
             st.write(f"Einstieg {trade.entry_price:.4f} → Ausstieg {trade.exit_price:.4f}")
+            st.write(
+                f"Zeit: {trade.entry_time:%d.%m.%Y %H:%M UTC} → "
+                f"{trade.exit_time:%d.%m.%Y %H:%M UTC}"
+            )
             st.write(f"Stück {trade.quantity:g} · Ergebnis {trade.pnl_pct:+.2f} % · Gebühren {trade.fees:.2f} €")
             st.write(f"Stop {trade.stop_loss:.4f} · Ziel {trade.take_profit:.4f}")
             st.write(f"Kaufgrund: {trade.entry_reason}")
             st.write(f"Verkaufsgrund: {trade.exit_reason}")
-            st.caption(f"Strategie {trade.strategy_version} · Gewichte {trade.weight_version}")
+            st.caption(
+                f"Quellen: {trade.entry_provider} → {trade.exit_provider} · "
+                f"Strategie {trade.strategy_version} · Gewichte {trade.weight_version}"
+            )
 
 
 def settings_page(settings: AppSettings, provider: MarketDataProvider) -> None:
@@ -473,6 +514,9 @@ def settings_page(settings: AppSettings, provider: MarketDataProvider) -> None:
         "\n".join(
             [
                 f"DATA_PROVIDER={settings.data_provider}",
+                f"APCA_API_KEY_ID={'gesetzt' if settings.alpaca_api_key_id else 'nicht gesetzt'}",
+                f"APCA_API_SECRET_KEY={'gesetzt' if settings.alpaca_api_secret_key else 'nicht gesetzt'}",
+                f"TWELVE_DATA_API_KEY={'gesetzt' if settings.twelve_data_api_key else 'nicht gesetzt'}",
                 f"APP_TIMEZONE={settings.timezone}",
                 f"STALE_AFTER_MINUTES={settings.stale_after_minutes}",
                 f"STARTING_CAPITAL={settings.starting_capital}",
@@ -482,7 +526,15 @@ def settings_page(settings: AppSettings, provider: MarketDataProvider) -> None:
             ]
         )
     )
-    st.write(f"Aktiver Anbieter: **{provider.name}**")
+    st.write(f"Aktive Realdatenkette: **{provider.name}**")
+    if not provider.is_demo and not (
+        settings.twelve_data_api_key
+        or (settings.alpaca_api_key_id and settings.alpaca_api_secret_key)
+    ):
+        st.info(
+            "Aktuell ist nur yfinance aktiv. Für kostenlose Intraday-Fallbacks können Alpaca- oder "
+            "Twelve-Data-Schlüssel gesetzt werden."
+        )
     st.caption("API-Schlüssel werden nie in der Oberfläche oder im Quellcode gespeichert.")
 
 
@@ -491,7 +543,7 @@ def system_status(store: DataStore, provider: MarketDataProvider, settings: AppS
     last = store.last_agent_run()
     st.success("Datenbank erreichbar und Tabellen initialisiert.")
     st.write(f"Kursdatenanbieter: **{provider.name}**")
-    st.write(f"Modus: **{'DEMO' if provider.is_demo else 'externe kostenlose Quelle'}**")
+    st.write(f"Modus: **{'OFFLINE-TEST' if provider.is_demo else 'kostenlose reale Quellen mit Qualitätsprüfung'}**")
     st.write(f"Analyseintervall: **ca. {settings.analysis_interval_minutes} Minuten**")
     st.write(f"Zeitzone: **{settings.timezone}**")
     if last:
@@ -501,4 +553,7 @@ def system_status(store: DataStore, provider: MarketDataProvider, settings: AppS
             st.warning(last.error_details)
     else:
         st.info("Noch kein Agentenlauf protokolliert.")
-    st.warning("yfinance und Demo-Nachrichten sind weder vollständig noch garantiert in Echtzeit.")
+    st.warning(
+        "Kostenlose Kursquellen können verzögert oder lückenhaft sein. Zu kurze Reihen werden verworfen; "
+        "wenn alle passenden Realdatenquellen scheitern, wird das Signal blockiert. Nachrichten sind deaktiviert."
+    )

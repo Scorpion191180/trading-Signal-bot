@@ -9,7 +9,7 @@ Eine modular aufgebaute Streamlit-Web-App für **experimentelle technische Markt
 - kompakte, für kleine Browserbreiten optimierte Streamlit-Oberfläche mit zwölf Bereichen
 - editierbare Watchlist mit Priorität, Analyseintervall und expliziter Spielgeld-Freigabe
 - manuell pflegbares echtes Depot, ausschließlich für Analysen und Hinweise
-- austauschbare Kursdaten-Schnittstelle mit `yfinance` und deterministischem Offline-Demo-Anbieter
+- automatische Realdatenkette: `yfinance`, optional Alpaca Market Data und Twelve Data
 - Candlestick-Chart mit Volumen, EMA 20/50/200, VWAP, Bollinger-Bändern und Preiszonen
 - RSI 14, MACD/Signallinie/Histogramm, ATR und relatives Volumen
 - vorsichtige Unterstützungs-/Widerstandszonen sowie erster Candlestick-Kontext
@@ -20,7 +20,7 @@ Eine modular aufgebaute Streamlit-Web-App für **experimentelle technische Markt
 - harte Risikoregeln: Positionsgröße, Stop-Risiko, Positionslimit, Datenalter, Volumen, Spread, Tagesverlust und Verlustserie
 - Trade-Journal und persistente Signal-/Agentenlauf-Historie
 - ereignisbasierter Backtest mit Folgekerzen-Ausführung, Equity-Kurve und Buy-and-Hold-Vergleich
-- vorbereitete Schnittstellen für Nachrichten und Benachrichtigungen
+- Nachrichtenbewertung bleibt ohne echte Quelle neutral; erfundene Meldungen werden nicht angezeigt
 - SQLite über SQLAlchemy; die Schicht kann später mit PostgreSQL betrieben werden
 - deterministische Offline-Tests und GitHub Actions
 
@@ -29,12 +29,12 @@ Eine modular aufgebaute Streamlit-Web-App für **experimentelle technische Markt
 - keine echten Orders oder Ordervorschläge direkt an einen Broker senden
 - keine offizielle oder inoffizielle Trade-Republic-Verbindung herstellen
 - keine vollständigen, garantierten oder zwingend Echtzeit-Kursdaten liefern
-- keine vollständige Nachrichtenabdeckung bieten; 0.1 zeigt nur klar markierte Demo-Meldungen
+- keine vollständige Nachrichtenabdeckung bieten; ohne echte Quelle bleibt der Bereich deaktiviert
 - keine Handelsgewinne vorhersagen oder versprechen
 - keine Strategieparameter selbstständig ändern
 - nicht alle bei einem Broker handelbaren Instrumente kennen
 
-Bei fehlenden, zu alten oder widersprüchlichen Daten blockiert das Signalmodell eine Einschätzung. Demo-Daten tragen stets eine sichtbare Kennzeichnung und dürfen nicht als reale Marktdaten interpretiert werden.
+Bei fehlenden, zu alten oder widersprüchlichen Daten blockiert das Signalmodell eine Einschätzung. Die normale App besitzt keinen Demo-Schalter. Synthetische Daten sind ausschließlich über `DATA_PROVIDER=mock` für Offline-Tests aktivierbar und werden technisch von Realdatenpositionen getrennt.
 
 ## Installation unter macOS/Linux
 
@@ -50,25 +50,19 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Für einen garantiert netzwerkfreien ersten Start in `.env` setzen:
-
-```dotenv
-DATA_PROVIDER=mock
-```
-
-Die App liest `.env` nicht automatisch ein; Werte können vor dem Start exportiert oder über eine Shell-/Hosting-Konfiguration gesetzt werden. Beispiel:
+Die App liest `.env` nicht automatisch ein; Werte können vor dem Start exportiert oder über eine Shell-/Hosting-Konfiguration gesetzt werden. Für den normalen Realdatenbetrieb genügt:
 
 ```bash
-export DATA_PROVIDER=mock
+export DATA_PROVIDER=auto
 streamlit run app.py
 ```
 
-Danach die von Streamlit angezeigte lokale Adresse öffnen. Beim ersten Start werden Verzeichnis, SQLite-Datei, Tabellen, Standard-Watchlist, Strategien und drei Spielgeld-Unterdepots automatisch angelegt.
+Danach die von Streamlit angezeigte lokale Adresse öffnen. Beim ersten Start werden Verzeichnis, die neue Realdatenbank `data/trading_signal_live.db`, Tabellen, Standard-Watchlist, Strategien und drei Spielgeld-Unterdepots automatisch angelegt. Eine ältere `data/trading_signal.db` wird weder gelöscht noch übernommen, damit frühere Demo- und Realdatensätze nicht vermischt werden.
 
 ## Bedienung des Spielgeld-Depots
 
-1. In **Watchlist** ein Symbol hinzufügen oder aktualisieren.
-2. **Für Spielgeld freigeben** bewusst aktivieren. Ohne Freigabe wird nur analysiert.
+1. In **Watchlist** ein Symbol hinzufügen oder direkt einstellen.
+2. **Spielgeld erlaubt** bewusst aktivieren. Ohne Freigabe wird nur analysiert.
 3. In **Aktienanalyse** Datenqualität, Punkte, Gründe, Stop und Ziel prüfen.
 4. Ein regelkonformer BUY kann virtuell bestätigt werden; alternativ prüft **Agenten-Depot → Agentenlauf jetzt starten** die gesamte Liste.
 5. Virtuelle Verkäufe entstehen durch Stop-Loss, Take-Profit, SELL-Signal oder einen manuellen virtuellen Verkauf.
@@ -108,11 +102,13 @@ Nachrichten sowie Markt/Branche werden in 0.1 neutral bewertet. Ein späteres Sp
 Ein manueller Lauf ist in der App möglich. Derselbe Einstiegspunkt eignet sich für Render Cron, einen Background Worker oder einen geplanten Prozess:
 
 ```bash
-export DATA_PROVIDER=mock
+export DATA_PROVIDER=auto
 python -m src.agent.cli
 ```
 
-Der Agent bildet einen eindeutigen 30-Minuten-Zeitschlüssel. Ein zweiter Lauf im gleichen Zeitfenster erzeugt keine doppelten virtuellen Orders. Mit `yfinance` können Marktferien, Börsenzeiten, Rate-Limits und verzögerte Daten dazu führen, dass einzelne Symbole blockiert oder protokolliert werden.
+`mock` ist ausschließlich für Offline-Tests und den ausdrücklich benannten Demo-Workflow bestimmt.
+
+Der Agent bildet einen eindeutigen 30-Minuten-Zeitschlüssel. Ein zweiter Lauf im gleichen Zeitfenster erzeugt keine doppelten virtuellen Orders. Zu kurze Kursreihen werden verworfen. Scheitert yfinance, versucht die App konfigurierte Alpaca- und Twelve-Data-Quellen. Sind keine passenden Realdaten verfügbar, wird das Symbol blockiert und der Grund protokolliert.
 
 Der optionale GitHub-Workflow **Manueller Demo-Agentenlauf** ist bewusst nur per `workflow_dispatch` startbar und verwendet deterministische Demo-Daten. Eine kurzlebige CI-Datenbank eignet sich nicht für ein dauerhaftes Depot.
 
@@ -126,8 +122,11 @@ Trotzdem bleibt das MVP vereinfacht: keine historische Geld-/Brief-Tickserie, ke
 
 | Variable | Standard | Bedeutung |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///data/trading_signal.db` | SQLAlchemy-Verbindung |
-| `DATA_PROVIDER` | `yfinance` | `yfinance` oder `mock` |
+| `DATABASE_URL` | `sqlite:///data/trading_signal_live.db` | getrennte SQLAlchemy-Verbindung für Realdatenläufe |
+| `DATA_PROVIDER` | `auto` | Realdaten-Fallbackkette; `mock` nur für Offline-Tests |
+| `APCA_API_KEY_ID` | leer | optionaler kostenloser Alpaca-IEX-Fallback |
+| `APCA_API_SECRET_KEY` | leer | zugehöriges Alpaca-Secret |
+| `TWELVE_DATA_API_KEY` | leer | optionaler kostenloser Intraday-Fallback |
 | `APP_TIMEZONE` | `Europe/Berlin` | Anzeige-/Planungszeitzone |
 | `STALE_AFTER_MINUTES` | `20` | Sperrgrenze für alte Intraday-Daten |
 | `STARTING_CAPITAL` | `10000` | Startkapital je Strategie |
@@ -139,9 +138,17 @@ Zugangsdaten und API-Schlüssel gehören ausschließlich in lokale Umgebungsvari
 
 ## Datenquellen und Einschränkungen
 
-`yfinance` ist eine kostenlose, austauschbare Startquelle. Verfügbarkeit, Aktualität, Intervallhistorie, Vor-/Nachbörse, Volumen und Börsenabdeckung sind nicht garantiert. Die App normalisiert auch MultiIndex-Antworten, kennzeichnet Fehler verständlich und protokolliert technische Details. Für einen produktionsnäheren Einsatz sollte ein lizenzierter Kurs- und Instrumentenanbieter hinter `MarketDataProvider` implementiert werden.
+Die Reihenfolge im Standardmodus ist:
 
-`MockMarketDataProvider` erzeugt aus dem Tickersymbol deterministische synthetische OHLCV-Daten mit aktuellem Zeitindex. `MockNewsProvider` liefert erfundene, neutrale Meldungen mit Glaubwürdigkeit 0. Beide sind deutlich als Demo markiert.
+1. **yfinance:** primäre kostenlose Quelle für Intraday- und Tagesdaten. Intraday-Historie ist auf die letzten 60 Tage begrenzt und Verfügbarkeit, Aktualität, Vor-/Nachbörse sowie Börsenabdeckung sind nicht garantiert.
+2. **Alpaca Market Data:** optionaler echter Fallback für US-Aktien. Der kostenlose Tarif bietet derzeit IEX-Daten, mehr als sieben Jahre Historie und bis zu 200 API-Abrufe pro Minute. Er benötigt `APCA_API_KEY_ID` und `APCA_API_SECRET_KEY` aus einem kostenlosen Konto. IEX ist nur eine Börse und das Volumen weicht deshalb vom vollständigen US-Gesamtmarkt ab.
+3. **Twelve Data:** optionaler echter Intraday-Fallback mit breiterer Instrumentenabdeckung. Der kostenlose Basic-Tarif umfasst derzeit 8 API-Credits pro Minute und 800 pro Tag. Er benötigt einen persönlichen Schlüssel in `TWELVE_DATA_API_KEY`.
+
+Stooq wurde geprüft, aber nicht integriert: Der frühere CSV-Zugang verlangt inzwischen eine JavaScript-Verifikation und ist damit keine verlässliche automatisierte Rückfallebene. Alpha Vantage bleibt mit 25 kostenlosen Abrufen pro Tag und kostenpflichtigem Intraday für diesen 30-Minuten-Agenten zu knapp. Finnhub bietet im kostenlosen Tarif keine ausreichende OHLC-Historie für das EMA-200-Modell.
+
+Jede Antwort wird auf OHLCV-Spalten, abgeschlossene Kerzen, positive Preise, Volumen und mindestens 200 Datenpunkte geprüft. Die tatsächlich verwendete Quelle wird an Signal, Position, virtueller Order und Trade gespeichert. Ein Wechsel zwischen Demo- und Realdaten ist blockiert. Wechselt eine reale Quelle bei offener Position und weicht der Kurs um mehr als 25 Prozent vom zuletzt gespeicherten Kurs ab, stoppt die App statt einen Gewinn oder Verlust zu buchen.
+
+Kostenlos bedeutet nicht garantiert echtzeitfähig oder für jeden Verwendungszweck lizenziert. Nutzungsbedingungen und Börsenrechte der jeweiligen Anbieter gelten weiterhin. `MockMarketDataProvider` und `MockNewsProvider` bleiben nur für deterministische Offline-Tests im Quellcode; die normale Oberfläche zeigt keine synthetischen Kurse oder Nachrichten.
 
 ## Tests und Qualitätsprüfung
 
@@ -158,7 +165,7 @@ Die Tests benötigen keine Netzwerkverbindung und prüfen unter anderem:
 - Gebühr, Spread und Slippage
 - virtuelle Käufe, Verkäufe, Journal und Deduplizierung
 - Strategie-/Gewichtsversionierung und Reset
-- neutrale Demo-Nachrichten
+- Fallbackreihenfolge, Quellenherkunft und Schutz vor Demo-/Realdatenmischung
 - Backtesting mit Ausführung auf der Folgekerze
 - Agentenlauf-Deduplizierung
 
@@ -181,12 +188,12 @@ SQLite auf dem flüchtigen Dateisystem eines einfachen Render-Webdienstes ist ni
 ```text
 app.py                         Streamlit-Einstieg und Navigation
 src/config.py                  zentrale Strategien, Gewichte, Umgebung
-src/data/                      Anbieter-Vertrag, yfinance, Demo-Daten
+src/data/                      Anbieter-Vertrag, Realdaten-Fallbacks, Offline-Testdaten
 src/analysis/                  Indikatoren, Zonen, Muster, Signale
 src/strategies/                versionierter Strategiekatalog
 src/portfolio/                 Risiko, virtuelle Ausführung, Backtest
 src/database/                  SQLAlchemy-Modelle, Sessions, Transaktionen
-src/news/                      Nachrichten-Vertrag und Demo-Anbieter
+src/news/                      Nachrichten-Vertrag und Offline-Testanbieter
 src/agent/                     idempotente 30-Minuten-Orchestrierung und CLI
 src/notifications/             vorbereiteter Kanal-Vertrag
 src/ui/                        mobile Seiten und Plotly-Charts

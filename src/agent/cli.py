@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from src.config import AppSettings
-from src.data import MockMarketDataProvider, YFinanceMarketDataProvider
+from src.data import build_market_data_provider
 from src.database import DataStore, create_database, create_session_factory
 
 from .service import TradingAgent
@@ -17,7 +17,12 @@ def main() -> int:
     engine = create_database(settings.database_url)
     store = DataStore(create_session_factory(engine), settings)
     store.seed_defaults()
-    provider = MockMarketDataProvider() if settings.data_provider == "mock" else YFinanceMarketDataProvider()
+    provider = build_market_data_provider(
+        settings.data_provider,
+        settings.twelve_data_api_key,
+        settings.alpaca_api_key_id,
+        settings.alpaca_api_secret_key,
+    )
     result = TradingAgent(provider, store, settings).run()
     if result.skipped_duplicate:
         logging.info("Der aktuelle 30-Minuten-Lauf wurde bereits verarbeitet.")

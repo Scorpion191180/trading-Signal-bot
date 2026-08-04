@@ -33,4 +33,5 @@ def store() -> DataStore:
     engine = create_database(settings.database_url)
     result = DataStore(create_session_factory(engine), settings)
     result.seed_defaults()
-    return result
+    yield result
+    engine.dispose()

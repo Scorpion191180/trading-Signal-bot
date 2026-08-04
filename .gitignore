@@ -9,4 +9,5 @@ venv/
 .DS_Store
 data/*.db
 data/*.db-*
+data/yfinance_cache/
 *.log

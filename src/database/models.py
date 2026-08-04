@@ -82,6 +82,9 @@ class VirtualPosition(Base):
     entry_reason: Mapped[str] = mapped_column(Text)
     entry_score: Mapped[float] = mapped_column(Float)
     weight_version: Mapped[str] = mapped_column(String(30), default="v1")
+    entry_provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    last_provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
     portfolio: Mapped[VirtualPortfolio] = relationship(back_populates="positions")
@@ -104,6 +107,8 @@ class VirtualOrder(Base):
     slippage_cost: Mapped[float] = mapped_column(Float)
     reason: Mapped[str] = mapped_column(Text)
     signal_score: Mapped[float] = mapped_column(Float)
+    provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -131,6 +136,9 @@ class Trade(Base):
     exit_reason: Mapped[str] = mapped_column(Text)
     entry_score: Mapped[float] = mapped_column(Float)
     exit_score: Mapped[float] = mapped_column(Float)
+    entry_provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    exit_provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     max_favorable: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_adverse: Mapped[float | None] = mapped_column(Float, nullable=True)
 

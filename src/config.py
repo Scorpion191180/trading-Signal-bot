@@ -73,8 +73,11 @@ STRATEGIES: dict[str, StrategyProfile] = {
 class AppSettings:
     """Laufzeitkonfiguration; Secrets werden ausschließlich aus der Umgebung gelesen."""
 
-    database_url: str = "sqlite:///data/trading_signal.db"
-    data_provider: str = "yfinance"
+    database_url: str = "sqlite:///data/trading_signal_live.db"
+    data_provider: str = "auto"
+    twelve_data_api_key: str = ""
+    alpaca_api_key_id: str = ""
+    alpaca_api_secret_key: str = ""
     timezone: str = "Europe/Berlin"
     default_interval: str = "5m"
     default_period: str = "5d"
@@ -93,8 +96,11 @@ class AppSettings:
     @classmethod
     def from_env(cls) -> AppSettings:
         return cls(
-            database_url=os.getenv("DATABASE_URL", "sqlite:///data/trading_signal.db"),
-            data_provider=os.getenv("DATA_PROVIDER", "yfinance").lower(),
+            database_url=os.getenv("DATABASE_URL", "sqlite:///data/trading_signal_live.db"),
+            data_provider=os.getenv("DATA_PROVIDER", "auto").lower(),
+            twelve_data_api_key=os.getenv("TWELVE_DATA_API_KEY", ""),
+            alpaca_api_key_id=os.getenv("APCA_API_KEY_ID", ""),
+            alpaca_api_secret_key=os.getenv("APCA_API_SECRET_KEY", ""),
             timezone=os.getenv("APP_TIMEZONE", "Europe/Berlin"),
             stale_after_minutes=int(os.getenv("STALE_AFTER_MINUTES", "20")),
             starting_capital=float(os.getenv("STARTING_CAPITAL", "10000")),

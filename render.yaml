@@ -12,7 +12,7 @@ services:
       - key: APP_TIMEZONE
         value: Europe/Berlin
       - key: DATA_PROVIDER
-        value: yfinance
+        value: auto
       - key: DATABASE_URL
         sync: false
 

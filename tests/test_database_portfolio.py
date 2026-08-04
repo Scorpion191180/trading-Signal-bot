@@ -52,6 +52,8 @@ def test_virtual_buy_sell_and_journal(store):
         reason="Testsignal",
         signal_score=70,
         weight_version="v1",
+        provider="Test-Realdaten",
+        is_demo=False,
         idempotency_key="buy-1",
     )
     assert order.side == "BUY"
@@ -67,6 +69,8 @@ def test_virtual_buy_sell_and_journal(store):
             reason="Doppelt",
             signal_score=70,
             weight_version="v1",
+            provider="Test-Realdaten",
+            is_demo=False,
             idempotency_key="buy-1",
         )
     store.close_position(
@@ -75,6 +79,8 @@ def test_virtual_buy_sell_and_journal(store):
         market_price=108,
         reason="Zielnah",
         signal_score=55,
+        provider="Test-Realdaten",
+        is_demo=False,
         idempotency_key="sell-1",
     )
     assert store.list_positions(portfolio.id) == []
@@ -83,6 +89,9 @@ def test_virtual_buy_sell_and_journal(store):
     assert trades[0].pnl_eur > 0
     assert trades[0].strategy_version == "v1"
     assert trades[0].weight_version == "v1"
+    assert trades[0].entry_provider == "Test-Realdaten"
+    assert trades[0].exit_provider == "Test-Realdaten"
+    assert trades[0].is_demo is False
 
 
 def test_duplicate_symbol_and_reset_are_safe(store):
@@ -97,6 +106,8 @@ def test_duplicate_symbol_and_reset_are_safe(store):
         "reason": "Test",
         "signal_score": 70,
         "weight_version": "v1",
+        "provider": "Test-Realdaten",
+        "is_demo": False,
     }
     store.open_position(**arguments)
     with pytest.raises(PortfolioError, match="Nachkauf"):
@@ -119,6 +130,8 @@ def test_daily_loss_limit_blocks_new_virtual_trades(store):
         reason="Risikotest",
         signal_score=70,
         weight_version="v1",
+        provider="Test-Realdaten",
+        is_demo=False,
     )
     store.close_position(
         portfolio_id=portfolio.id,
@@ -126,7 +139,63 @@ def test_daily_loss_limit_blocks_new_virtual_trades(store):
         market_price=70,
         reason="Testverlust",
         signal_score=20,
+        provider="Test-Realdaten",
+        is_demo=False,
     )
     allowed, reason = store.trading_guard(portfolio.id)
     assert not allowed
     assert "Verlustlimit" in reason
+
+
+def test_demo_and_real_sources_cannot_be_mixed(store):
+    portfolio = next(value for value in store.list_portfolios() if value.name == "Normal")
+    store.open_position(
+        portfolio_id=portfolio.id,
+        symbol="MIX",
+        quantity=2,
+        market_price=50,
+        stop_loss=45,
+        take_profit=60,
+        reason="Quellentest",
+        signal_score=70,
+        weight_version="v1",
+        provider="Offline-Testdaten",
+        is_demo=True,
+    )
+    with pytest.raises(PortfolioError, match="Demo- und Realdaten"):
+        store.close_position(
+            portfolio_id=portfolio.id,
+            symbol="MIX",
+            market_price=500,
+            reason="Darf nicht gebucht werden",
+            signal_score=50,
+            provider="yfinance",
+            is_demo=False,
+        )
+    assert len(store.list_positions(portfolio.id)) == 1
+    assert store.list_trades(portfolio.id) == []
+
+
+def test_large_jump_during_real_source_switch_is_blocked(store):
+    portfolio = next(value for value in store.list_portfolios() if value.name == "Normal")
+    store.open_position(
+        portfolio_id=portfolio.id,
+        symbol="JUMP",
+        quantity=2,
+        market_price=50,
+        stop_loss=45,
+        take_profit=60,
+        reason="Quellentest",
+        signal_score=70,
+        weight_version="v1",
+        provider="yfinance",
+        is_demo=False,
+    )
+    with pytest.raises(PortfolioError, match="Kurssprung"):
+        store.update_market_price(
+            portfolio.id,
+            "JUMP",
+            500,
+            provider="Stooq (Tagesschluss)",
+            is_demo=False,
+        )

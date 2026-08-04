@@ -217,7 +217,36 @@ class DataStore:
                 query = query.where(VirtualPosition.portfolio_id == portfolio_id)
             return list(session.scalars(query))
 
-    def update_market_price(self, portfolio_id: int, symbol: str, price: float) -> None:
+    @staticmethod
+    def _validate_position_source(
+        position: VirtualPosition,
+        *,
+        provider: str,
+        is_demo: bool,
+        price: float,
+    ) -> None:
+        if position.entry_provider == "unbekannt":
+            raise PortfolioError(
+                "Die Herkunft dieser Altposition ist unbekannt. Sie wird nicht mit neuen Kursen vermischt."
+            )
+        if position.is_demo != is_demo:
+            raise PortfolioError("Wechsel zwischen Demo- und Realdaten für eine offene Position blockiert.")
+        if position.last_provider != provider and position.current_price > 0:
+            change = abs(price / position.current_price - 1)
+            if change > 0.25:
+                raise PortfolioError(
+                    f"Quellenwechsel {position.last_provider} → {provider} mit {change:.1%} Kurssprung blockiert."
+                )
+
+    def update_market_price(
+        self,
+        portfolio_id: int,
+        symbol: str,
+        price: float,
+        *,
+        provider: str,
+        is_demo: bool,
+    ) -> None:
         with self.sessions.begin() as session:
             position = session.scalar(
                 select(VirtualPosition).where(
@@ -226,7 +255,9 @@ class DataStore:
                 )
             )
             if position and price > 0:
+                self._validate_position_source(position, provider=provider, is_demo=is_demo, price=price)
                 position.current_price = price
+                position.last_provider = provider
 
     def portfolio_value(self, portfolio_id: int) -> float:
         with self.sessions() as session:
@@ -252,6 +283,8 @@ class DataStore:
         reason: str,
         signal_score: float,
         weight_version: str,
+        provider: str,
+        is_demo: bool,
         idempotency_key: str | None = None,
     ) -> VirtualOrder:
         key = idempotency_key or str(uuid.uuid4())
@@ -297,6 +330,8 @@ class DataStore:
                 slippage_cost=quote.slippage_cost,
                 reason=reason,
                 signal_score=signal_score,
+                provider=provider,
+                is_demo=is_demo,
             )
             session.add(order)
             session.add(
@@ -312,6 +347,9 @@ class DataStore:
                     entry_reason=reason,
                     entry_score=signal_score,
                     weight_version=weight_version,
+                    entry_provider=provider,
+                    last_provider=provider,
+                    is_demo=is_demo,
                 )
             )
             session.flush()
@@ -325,6 +363,8 @@ class DataStore:
         market_price: float,
         reason: str,
         signal_score: float,
+        provider: str,
+        is_demo: bool,
         quantity: float | None = None,
         idempotency_key: str | None = None,
     ) -> VirtualOrder:
@@ -341,6 +381,7 @@ class DataStore:
             )
             if not portfolio or not position:
                 raise PortfolioError("Offene virtuelle Position nicht gefunden.")
+            self._validate_position_source(position, provider=provider, is_demo=is_demo, price=market_price)
             sell_quantity = position.quantity if quantity is None else quantity
             if sell_quantity <= 0 or sell_quantity > position.quantity + 1e-9:
                 raise PortfolioError("Ungültige Verkaufsstückzahl.")
@@ -372,6 +413,8 @@ class DataStore:
                 slippage_cost=quote.slippage_cost,
                 reason=reason,
                 signal_score=signal_score,
+                provider=provider,
+                is_demo=is_demo,
             )
             session.add(order)
             session.add(
@@ -395,11 +438,15 @@ class DataStore:
                     exit_reason=reason,
                     entry_score=position.entry_score,
                     exit_score=signal_score,
+                    entry_provider=position.entry_provider,
+                    exit_provider=provider,
+                    is_demo=is_demo,
                 )
             )
             position.quantity -= sell_quantity
             position.entry_fees_remaining -= entry_fee_share
             position.current_price = market_price
+            position.last_provider = provider
             if position.quantity <= 1e-9:
                 session.delete(position)
             session.flush()

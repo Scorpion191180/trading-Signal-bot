@@ -8,7 +8,7 @@ import streamlit as st
 
 from src.agent import TradingAgent
 from src.config import AppSettings
-from src.data import MockMarketDataProvider, YFinanceMarketDataProvider
+from src.data import build_market_data_provider
 from src.database import DataStore, create_database, create_session_factory
 from src.ui import pages
 
@@ -41,8 +41,12 @@ def services() -> tuple[AppSettings, DataStore]:
 
 
 settings, store = services()
-demo_mode = st.sidebar.toggle("Demo-Daten verwenden", value=settings.data_provider == "mock")
-provider = MockMarketDataProvider() if demo_mode else YFinanceMarketDataProvider()
+provider = build_market_data_provider(
+    settings.data_provider,
+    settings.twelve_data_api_key,
+    settings.alpaca_api_key_id,
+    settings.alpaca_api_secret_key,
+)
 agent = TradingAgent(provider, store, settings)
 
 navigation = [
@@ -60,6 +64,10 @@ navigation = [
     "Systemstatus",
 ]
 page = st.sidebar.radio("Navigation", navigation)
+if provider.is_demo:
+    st.sidebar.warning("Offline-Testmodus durch DATA_PROVIDER=mock aktiviert")
+else:
+    st.sidebar.caption(f"Reale Kursquellen: {provider.name}")
 st.sidebar.caption("Keine echten Orders · keine Trade-Republic-Verbindung · keine Anlageberatung")
 
 if page == "Übersicht":
