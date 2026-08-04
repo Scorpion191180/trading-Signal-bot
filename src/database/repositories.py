@@ -129,6 +129,31 @@ class DataStore:
             if item:
                 session.delete(item)
 
+    def update_watchlist_settings(
+        self,
+        item_id: int,
+        *,
+        priority: bool,
+        trading_allowed: bool,
+        interval: str,
+        extended_hours: bool,
+    ) -> WatchlistItem:
+        """Speichert die direkt bedienbaren Einstellungen eines Watchlist-Eintrags."""
+
+        if interval not in {"1m", "5m", "15m", "30m", "1h", "1d"}:
+            raise ValueError("Das gewählte Analyseintervall wird nicht unterstützt.")
+        with self.sessions.begin() as session:
+            item = session.get(WatchlistItem, item_id)
+            if item is None:
+                raise ValueError("Der Watchlist-Eintrag wurde nicht gefunden.")
+            item.priority = priority
+            item.trading_allowed = trading_allowed
+            item.analysis_only = not trading_allowed
+            item.interval = interval
+            item.extended_hours = extended_hours
+            session.flush()
+            return item
+
     def list_real_positions(self) -> list[RealPosition]:
         with self.sessions() as session:
             return list(session.scalars(select(RealPosition).order_by(RealPosition.symbol)))

@@ -117,33 +117,70 @@ def real_portfolio(store: DataStore) -> None:
 
 def watchlist(store: DataStore) -> None:
     st.title("Watchlist")
-    with st.form("watchlist"):
-        symbol = st.text_input("Tickersymbol").upper()
-        company = st.text_input("Unternehmen (optional)")
-        c1, c2 = st.columns(2)
-        priority = c1.checkbox("Priorisiert")
-        trading_allowed = c2.checkbox("Für Spielgeld freigeben")
-        interval = st.selectbox("Hauptintervall", ["1m", "5m", "15m", "30m", "1h", "1d"], index=1)
-        extended = st.checkbox("Vor-/Nachbörse anfragen (nur soweit Datenquelle zuverlässig)")
-        if st.form_submit_button("Hinzufügen/aktualisieren", width="stretch"):
-            try:
-                store.add_watchlist_item(
-                    symbol,
-                    company=company,
+    items = store.list_watchlist()
+    with st.expander("Neue Aktie hinzufügen", expanded=not bool(items)):
+        with st.form("watchlist-add"):
+            symbol = st.text_input("Tickersymbol").upper()
+            company = st.text_input("Unternehmen (optional)")
+            if st.form_submit_button("Aktie hinzufügen", width="stretch"):
+                if symbol in {item.symbol for item in items}:
+                    st.error("Diese Aktie ist bereits vorhanden. Einstellungen bitte direkt unten ändern.")
+                else:
+                    try:
+                        store.add_watchlist_item(symbol, company=company)
+                        st.success("Aktie hinzugefügt.")
+                        st.rerun()
+                    except ValueError as exc:
+                        st.error(str(exc))
+
+    st.caption("Schalter und Intervalle werden sofort gespeichert – ein zusätzlicher Speichern-Button ist nicht nötig.")
+    intervals = ["1m", "5m", "15m", "30m", "1h", "1d"]
+    for item in items:
+        with st.container(border=True):
+            st.markdown(f"### {item.symbol}")
+            if item.company and item.company != item.symbol:
+                st.caption(item.company)
+            c1, c2 = st.columns(2)
+            trading_allowed = c1.toggle(
+                "Spielgeld erlaubt",
+                value=item.trading_allowed,
+                key=f"watch-trading-{item.id}",
+                help="Der Agent darf für diese Aktie ausschließlich virtuelle Orders erzeugen.",
+            )
+            priority = c2.toggle(
+                "Priorisiert",
+                value=item.priority,
+                key=f"watch-priority-{item.id}",
+            )
+            interval = st.selectbox(
+                "Analyseintervall",
+                intervals,
+                index=intervals.index(item.interval),
+                key=f"watch-interval-{item.id}",
+            )
+            extended = st.toggle(
+                "Vor-/Nachbörse anfragen",
+                value=item.extended_hours,
+                key=f"watch-extended-{item.id}",
+                help="Nur soweit die aktive Datenquelle diese Kurse zuverlässig liefert.",
+            )
+            changed = (
+                trading_allowed != item.trading_allowed
+                or priority != item.priority
+                or interval != item.interval
+                or extended != item.extended_hours
+            )
+            if changed:
+                store.update_watchlist_settings(
+                    item.id,
                     priority=priority,
                     trading_allowed=trading_allowed,
                     interval=interval,
                     extended_hours=extended,
                 )
-                st.success("Watchlist aktualisiert.")
-                st.rerun()
-            except ValueError as exc:
-                st.error(str(exc))
-    for item in store.list_watchlist():
-        label = "Spielgeld erlaubt" if item.trading_allowed else "Nur Analyse"
-        with st.container(border=True):
-            st.write(f"**{item.symbol}** · {item.company} · {item.interval}")
-            st.caption(("⭐ " if item.priority else "") + label)
+                st.toast(f"{item.symbol}: Einstellungen gespeichert.", icon="✅")
+            status = "Für virtuelle Trades freigegeben" if trading_allowed else "Nur Analyse"
+            st.caption(("⭐ " if priority else "") + status)
             if st.button("Entfernen", key=f"delete-watch-{item.id}"):
                 store.delete_watchlist_item(item.id)
                 st.rerun()

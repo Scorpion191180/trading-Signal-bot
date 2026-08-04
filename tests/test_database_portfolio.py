@@ -12,6 +12,19 @@ def test_defaults_and_watchlist_crud(store):
     item = store.add_watchlist_item("test", company="Test AG", trading_allowed=True)
     assert item.symbol == "TEST"
     assert item.trading_allowed is True
+    store.update_watchlist_settings(
+        item.id,
+        priority=True,
+        trading_allowed=False,
+        interval="15m",
+        extended_hours=True,
+    )
+    updated = next(value for value in store.list_watchlist() if value.symbol == "TEST")
+    assert updated.priority is True
+    assert updated.trading_allowed is False
+    assert updated.analysis_only is True
+    assert updated.interval == "15m"
+    assert updated.extended_hours is True
     store.delete_watchlist_item(item.id)
     assert all(value.symbol != "TEST" for value in store.list_watchlist())
     assert {value.name for value in store.list_portfolios()} == {"Defensiv", "Normal", "Aggressiv"}
