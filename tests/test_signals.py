@@ -35,3 +35,18 @@ def test_missing_volume_blocks_signal(market_frame):
 def test_insufficient_history_blocks_signal(market_frame):
     result = analyze_signal("SHORT", market_frame.head(20), STRATEGIES["Normal"], provider="test")
     assert result.action is SignalAction.BLOCKED
+
+
+def test_news_factor_changes_score_and_is_explained(market_frame):
+    positive = analyze_signal(
+        "TEST", market_frame, STRATEGIES["Normal"], provider="test", news_factor=0.8
+    )
+    negative = analyze_signal(
+        "TEST", market_frame, STRATEGIES["Normal"], provider="test", news_factor=0.2
+    )
+
+    assert positive.score - negative.score == 9
+    assert positive.news_factor == 0.8
+    assert negative.news_factor == 0.2
+    assert any("Nachrichtenlage positiv" in value for value in positive.positive_factors)
+    assert any("Nachrichtenlage negativ" in value for value in negative.negative_factors)

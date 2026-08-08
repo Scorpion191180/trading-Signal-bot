@@ -7,6 +7,7 @@ import logging
 from src.config import AppSettings
 from src.data import build_market_data_provider
 from src.database import DataStore, create_database, create_session_factory
+from src.news import YFinanceNewsProvider
 
 from .service import TradingAgent
 
@@ -23,7 +24,8 @@ def main() -> int:
         settings.alpaca_api_key_id,
         settings.alpaca_api_secret_key,
     )
-    result = TradingAgent(provider, store, settings).run()
+    news_provider = None if provider.is_demo else YFinanceNewsProvider()
+    result = TradingAgent(provider, store, settings, news_provider).run()
     if result.skipped_duplicate:
         logging.info("Der aktuelle 30-Minuten-Lauf wurde bereits verarbeitet.")
         return 0

@@ -12,10 +12,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.analysis.signals import SignalResult
 from src.config import STRATEGIES, WEIGHTS, AppSettings
+from src.news import NewsItem
 from src.portfolio.execution import simulated_execution
 
 from .models import (
     AgentRun,
+    NewsRecord,
     RealPosition,
     SignalRecord,
     StrategyVersion,
@@ -285,6 +287,8 @@ class DataStore:
         weight_version: str,
         provider: str,
         is_demo: bool,
+        news_factor: float = 0.5,
+        news_ids: tuple[str, ...] = (),
         idempotency_key: str | None = None,
     ) -> VirtualOrder:
         key = idempotency_key or str(uuid.uuid4())
@@ -349,6 +353,8 @@ class DataStore:
                     weight_version=weight_version,
                     entry_provider=provider,
                     last_provider=provider,
+                    entry_news_factor=news_factor,
+                    entry_news_ids=",".join(news_ids),
                     is_demo=is_demo,
                 )
             )
@@ -365,6 +371,8 @@ class DataStore:
         signal_score: float,
         provider: str,
         is_demo: bool,
+        news_factor: float = 0.5,
+        news_ids: tuple[str, ...] = (),
         quantity: float | None = None,
         idempotency_key: str | None = None,
     ) -> VirtualOrder:
@@ -440,6 +448,10 @@ class DataStore:
                     exit_score=signal_score,
                     entry_provider=position.entry_provider,
                     exit_provider=provider,
+                    entry_news_factor=position.entry_news_factor,
+                    exit_news_factor=news_factor,
+                    entry_news_ids=position.entry_news_ids,
+                    exit_news_ids=",".join(news_ids),
                     is_demo=is_demo,
                 )
             )
@@ -479,7 +491,11 @@ class DataStore:
                 query = query.where(VirtualOrder.portfolio_id == portfolio_id)
             return list(session.scalars(query))
 
-    def record_signal(self, result: SignalResult) -> SignalRecord:
+    def record_signal(
+        self,
+        result: SignalResult,
+        news_items: list[NewsItem] | None = None,
+    ) -> SignalRecord:
         with self.sessions.begin() as session:
             record = SignalRecord(
                 symbol=result.symbol,
@@ -489,6 +505,8 @@ class DataStore:
                 confidence=result.confidence,
                 price=result.price,
                 provider=result.provider,
+                news_factor=result.news_factor,
+                news_ids=",".join(item.external_id for item in (news_items or [])),
                 positive_factors="\n".join(result.positive_factors),
                 negative_factors="\n".join(result.negative_factors),
                 data_problem=result.data_problem,
@@ -501,6 +519,110 @@ class DataStore:
     def list_signals(self, limit: int = 100) -> list[SignalRecord]:
         with self.sessions() as session:
             return list(session.scalars(select(SignalRecord).order_by(SignalRecord.analyzed_at.desc()).limit(limit)))
+
+    def upsert_news(self, items: list[NewsItem]) -> int:
+        """Speichert reale Meldungen idempotent und vereinigt deren Symbolbezug."""
+
+        inserted = 0
+        with self.sessions.begin() as session:
+            for item in items:
+                record = session.scalar(
+                    select(NewsRecord).where(NewsRecord.external_id == item.external_id)
+                )
+                related = set(item.related_symbols or (item.symbol,))
+                if record is None:
+                    record = NewsRecord(
+                        external_id=item.external_id,
+                        symbol=item.symbol,
+                        source=item.source,
+                        title=item.title,
+                        summary=item.summary,
+                        url=item.url,
+                        sentiment=item.sentiment,
+                        impact=item.impact,
+                        credibility=item.credibility,
+                        direct_relevance=item.direct_relevance,
+                        possibly_priced_in=item.possibly_priced_in,
+                        related_symbols=",".join(sorted(related)),
+                        published_at=item.published_at,
+                        is_demo=item.is_demo,
+                    )
+                    session.add(record)
+                    inserted += 1
+                else:
+                    related.update(value for value in record.related_symbols.split(",") if value)
+                    record.symbol = record.symbol or item.symbol
+                    record.source = item.source
+                    record.title = item.title
+                    record.summary = item.summary
+                    record.url = item.url
+                    record.sentiment = item.sentiment
+                    record.impact = item.impact
+                    record.credibility = item.credibility
+                    record.direct_relevance = record.direct_relevance or item.direct_relevance
+                    record.possibly_priced_in = item.possibly_priced_in
+                    record.related_symbols = ",".join(sorted(related))
+                    record.published_at = item.published_at
+                    record.is_demo = item.is_demo
+                    record.fetched_at = datetime.now(UTC)
+        return inserted
+
+    def list_news(
+        self,
+        *,
+        symbol: str | None = None,
+        limit: int = 100,
+        max_age_hours: int | None = None,
+    ) -> list[NewsRecord]:
+        with self.sessions() as session:
+            records = list(session.scalars(select(NewsRecord).order_by(NewsRecord.published_at.desc())))
+        normalized = symbol.upper().strip() if symbol else None
+        cutoff = datetime.now(UTC).timestamp() - max_age_hours * 3600 if max_age_hours else None
+        result: list[NewsRecord] = []
+        for record in records:
+            related = {value for value in record.related_symbols.split(",") if value}
+            if normalized and normalized not in related and record.symbol != normalized:
+                continue
+            published = record.published_at
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=UTC)
+            if cutoff is not None and published.timestamp() < cutoff:
+                continue
+            result.append(record)
+            if len(result) >= limit:
+                break
+        return result
+
+    def list_news_items(
+        self,
+        *,
+        symbol: str | None = None,
+        limit: int = 100,
+        max_age_hours: int | None = None,
+    ) -> list[NewsItem]:
+        return [
+            NewsItem(
+                external_id=record.external_id,
+                symbol=record.symbol,
+                title=record.title,
+                summary=record.summary,
+                source=record.source,
+                published_at=record.published_at,
+                sentiment=record.sentiment,
+                impact=record.impact,
+                credibility=record.credibility,
+                direct_relevance=record.direct_relevance,
+                possibly_priced_in=record.possibly_priced_in,
+                is_demo=record.is_demo,
+                url=record.url,
+                related_symbols=tuple(value for value in record.related_symbols.split(",") if value),
+            )
+            for record in self.list_news(
+                symbol=symbol,
+                limit=limit,
+                max_age_hours=max_age_hours,
+            )
+        ]
 
     def start_agent_run(self, run_key: str, symbols: list[str], provider: str) -> AgentRun:
         with self.sessions.begin() as session:

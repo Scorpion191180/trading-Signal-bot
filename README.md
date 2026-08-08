@@ -18,9 +18,9 @@ Eine modular aufgebaute Streamlit-Web-App für **experimentelle technische Markt
 - ausschließlich simulierte Käufe, Teil-/Gesamtverkäufe, Stop-Loss und Take-Profit
 - Ausführungsmodell mit konfigurierbarer Gebühr, Spread und Slippage
 - harte Risikoregeln: Positionsgröße, Stop-Risiko, Positionslimit, Datenalter, Volumen, Spread, Tagesverlust und Verlustserie
-- Trade-Journal und persistente Signal-/Agentenlauf-Historie
+- Trade-Journal und persistente Signal-/Agentenlauf-Historie mit Daten- und Nachrichtenherkunft
 - ereignisbasierter Backtest mit Folgekerzen-Ausführung, Equity-Kurve und Buy-and-Hold-Vergleich
-- Nachrichtenbewertung bleibt ohne echte Quelle neutral; erfundene Meldungen werden nicht angezeigt
+- kostenlose echte Watchlist-Nachrichten über yfinance, dedupliziert und vorsichtig regelbasiert bewertet
 - SQLite über SQLAlchemy; die Schicht kann später mit PostgreSQL betrieben werden
 - deterministische Offline-Tests und GitHub Actions
 
@@ -29,7 +29,8 @@ Eine modular aufgebaute Streamlit-Web-App für **experimentelle technische Markt
 - keine echten Orders oder Ordervorschläge direkt an einen Broker senden
 - keine offizielle oder inoffizielle Trade-Republic-Verbindung herstellen
 - keine vollständigen, garantierten oder zwingend Echtzeit-Kursdaten liefern
-- keine vollständige Nachrichtenabdeckung bieten; ohne echte Quelle bleibt der Bereich deaktiviert
+- keine vollständige, garantierte oder zwingend aktuelle Nachrichtenabdeckung bieten
+- keine verlässliche Bedeutung einer Schlagzeile „verstehen“; die Bewertung ist eine begrenzte Heuristik
 - keine Handelsgewinne vorhersagen oder versprechen
 - keine Strategieparameter selbstständig ändern
 - nicht alle bei einem Broker handelbaren Instrumente kennen
@@ -95,7 +96,7 @@ Zusätzlich gelten standardmäßig ein tägliches Verlustlimit von 2 %, eine Pau
 | Nachrichten | 15 |
 | Markt/Branche | 10 |
 
-Nachrichten sowie Markt/Branche werden in 0.1 neutral bewertet. Ein späteres Sprachmodell darf diese Komponenten strukturieren, aber niemals allein eine Orderentscheidung auslösen.
+Nachrichten werden aus bestätigten Watchlist-Bezügen vorsichtig positiv, negativ oder neutral bewertet. Unklare, gemischte und fehlende Meldungen bleiben neutral; ältere Meldungen erhalten weniger Gewicht. Markt/Branche bleibt in 0.1 neutral. Weder die Nachrichtenkomponente noch ein späteres Sprachmodell darf allein eine Orderentscheidung auslösen.
 
 ## Agentenlauf
 
@@ -108,7 +109,7 @@ python -m src.agent.cli
 
 `mock` ist ausschließlich für Offline-Tests und den ausdrücklich benannten Demo-Workflow bestimmt.
 
-Der Agent bildet einen eindeutigen 30-Minuten-Zeitschlüssel. Ein zweiter Lauf im gleichen Zeitfenster erzeugt keine doppelten virtuellen Orders. Zu kurze Kursreihen werden verworfen. Scheitert yfinance, versucht die App konfigurierte Alpaca- und Twelve-Data-Quellen. Sind keine passenden Realdaten verfügbar, wird das Symbol blockiert und der Grund protokolliert.
+Der Agent bildet einen eindeutigen 30-Minuten-Zeitschlüssel. Ein zweiter Lauf im gleichen Zeitfenster erzeugt keine doppelten virtuellen Orders. Zu kurze Kursreihen werden verworfen. Scheitert yfinance bei Kursen, versucht die App konfigurierte Alpaca- und Twelve-Data-Quellen. Sind keine passenden Realdaten verfügbar, wird das Symbol blockiert und der Grund protokolliert. Aktuelle Nachrichten werden vor jeder Symbolanalyse geladen und mit dem Signal, einem Einstieg sowie einem Ausstieg verknüpft. Fällt der Nachrichtenabruf aus, bleibt nur diese Komponente neutral; der Fehler erzeugt keinen erfundenen Inhalt und keinen eigenständigen Trade.
 
 Der optionale GitHub-Workflow **Manueller Demo-Agentenlauf** ist bewusst nur per `workflow_dispatch` startbar und verwendet deterministische Demo-Daten. Eine kurzlebige CI-Datenbank eignet sich nicht für ein dauerhaftes Depot.
 
@@ -144,6 +145,8 @@ Die Reihenfolge im Standardmodus ist:
 2. **Alpaca Market Data:** optionaler echter Fallback für US-Aktien. Der kostenlose Tarif bietet derzeit IEX-Daten, mehr als sieben Jahre Historie und bis zu 200 API-Abrufe pro Minute. Er benötigt `APCA_API_KEY_ID` und `APCA_API_SECRET_KEY` aus einem kostenlosen Konto. IEX ist nur eine Börse und das Volumen weicht deshalb vom vollständigen US-Gesamtmarkt ab.
 3. **Twelve Data:** optionaler echter Intraday-Fallback mit breiterer Instrumentenabdeckung. Der kostenlose Basic-Tarif umfasst derzeit 8 API-Credits pro Minute und 800 pro Tag. Er benötigt einen persönlichen Schlüssel in `TWELVE_DATA_API_KEY`.
 
+Für Nachrichten verwendet die App die yfinance-Suche pro Watchlist-Symbol. Sie benötigt keinen API-Schlüssel, liefert Titel, Quelle, Zeitpunkt, Link und bestätigte Symbolbezüge und wird in der lokalen Datenbank dedupliziert. Meldungen ohne bestätigten Bezug zu einem Watchlist-Symbol werden nicht gewertet. Eine Schlagzeilen-Heuristik reagiert nur auf explizite Ereignisbegriffe; gemischte oder unbekannte Texte bleiben neutral. Der separat angebotene `Ticker.get_news`-Feed wird nicht als automatischer Fallback gewertet, weil seine Antwort den Symbolbezug nicht durchgehend ausweist und in Live-Prüfungen auch allgemeine Meldungen enthalten kann.
+
 Stooq wurde geprüft, aber nicht integriert: Der frühere CSV-Zugang verlangt inzwischen eine JavaScript-Verifikation und ist damit keine verlässliche automatisierte Rückfallebene. Alpha Vantage bleibt mit 25 kostenlosen Abrufen pro Tag und kostenpflichtigem Intraday für diesen 30-Minuten-Agenten zu knapp. Finnhub bietet im kostenlosen Tarif keine ausreichende OHLC-Historie für das EMA-200-Modell.
 
 Jede Antwort wird auf OHLCV-Spalten, abgeschlossene Kerzen, positive Preise, Volumen und mindestens 200 Datenpunkte geprüft. Die tatsächlich verwendete Quelle wird an Signal, Position, virtueller Order und Trade gespeichert. Ein Wechsel zwischen Demo- und Realdaten ist blockiert. Wechselt eine reale Quelle bei offener Position und weicht der Kurs um mehr als 25 Prozent vom zuletzt gespeicherten Kurs ab, stoppt die App statt einen Gewinn oder Verlust zu buchen.
@@ -166,6 +169,7 @@ Die Tests benötigen keine Netzwerkverbindung und prüfen unter anderem:
 - virtuelle Käufe, Verkäufe, Journal und Deduplizierung
 - Strategie-/Gewichtsversionierung und Reset
 - Fallbackreihenfolge, Quellenherkunft und Schutz vor Demo-/Realdatenmischung
+- echte Nachrichten-Normalisierung, Relevanzfilter, Deduplizierung, Altersabschlag und neutraler Fehlerfall
 - Backtesting mit Ausführung auf der Folgekerze
 - Agentenlauf-Deduplizierung
 
@@ -193,7 +197,7 @@ src/analysis/                  Indikatoren, Zonen, Muster, Signale
 src/strategies/                versionierter Strategiekatalog
 src/portfolio/                 Risiko, virtuelle Ausführung, Backtest
 src/database/                  SQLAlchemy-Modelle, Sessions, Transaktionen
-src/news/                      Nachrichten-Vertrag und Offline-Testanbieter
+src/news/                      echter Nachrichtenanbieter, Bewertung und Offline-Testanbieter
 src/agent/                     idempotente 30-Minuten-Orchestrierung und CLI
 src/notifications/             vorbereiteter Kanal-Vertrag
 src/ui/                        mobile Seiten und Plotly-Charts
@@ -204,7 +208,7 @@ data/                          lokale, ignorierte SQLite-Daten
 
 ## Geplante Ausbaustufen
 
-1. seriöse Nachrichten-/RSS-Anbieter, Deduplizierung und regelkontrollierte Sentimentbewertung
+1. zusätzliche seriöse Nachrichten-/RSS-Quelle als unabhängiger Fallback und Unternehmensnamensauflösung
 2. Mehr-Zeitebenen-Bestätigung, Markt-/Branchenkontext, ADX, Stochastic RSI, MFI und umfangreichere vorsichtige Muster
 3. Börsenkalender, Währungsumrechnung, historische Quotes und realistischere Liquiditäts-/Ausführungsmodelle
 4. PostgreSQL-Migrationen, Authentifizierung, Render Worker/Cron und Benachrichtigungskanäle

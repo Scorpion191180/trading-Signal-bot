@@ -10,6 +10,7 @@ from src.agent import TradingAgent
 from src.config import AppSettings
 from src.data import build_market_data_provider
 from src.database import DataStore, create_database, create_session_factory
+from src.news import YFinanceNewsProvider
 from src.ui import pages
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -47,7 +48,8 @@ provider = build_market_data_provider(
     settings.alpaca_api_key_id,
     settings.alpaca_api_secret_key,
 )
-agent = TradingAgent(provider, store, settings)
+news_provider = None if provider.is_demo else YFinanceNewsProvider()
+agent = TradingAgent(provider, store, settings, news_provider)
 
 navigation = [
     "Übersicht",
@@ -83,7 +85,7 @@ elif page == "Aktienanalyse":
 elif page == "Markt-Scanner":
     pages.scanner(store, provider, settings)
 elif page == "Nachrichten":
-    pages.news_page(store)
+    pages.news_page(store, news_provider)
 elif page == "Strategien":
     pages.strategies_page()
 elif page == "Backtesting":

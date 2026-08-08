@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.agent import TradingAgent
 from src.config import AppSettings
 from src.data import MockMarketDataProvider
-from src.news.base import news_score
+from src.news.base import NewsProviderError, news_score
 from src.news.mock_provider import MockNewsProvider
 
 
@@ -24,3 +24,21 @@ def test_agent_prevents_duplicate_run(store):
     assert first.signals == 27
     assert second.skipped_duplicate is True
     assert len(store.list_signals()) == 27
+
+
+def test_agent_keeps_news_neutral_when_provider_fails(store):
+    class FailingNewsProvider:
+        name = "Ausgefallene Testquelle"
+        is_demo = False
+
+        def get_news(self, symbols):
+            raise NewsProviderError("Rate-Limit")
+
+    settings = AppSettings(database_url="sqlite:///:memory:", data_provider="mock")
+    agent = TradingAgent(MockMarketDataProvider(), store, settings, FailingNewsProvider())
+    result = agent.run(force=True)
+
+    assert result.signals == 27
+    assert result.errors == ()
+    assert store.list_news() == []
+    assert {signal.news_factor for signal in store.list_signals()} == {0.5}

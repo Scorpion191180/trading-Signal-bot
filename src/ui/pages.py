@@ -20,6 +20,7 @@ from src.data import (
     source_name,
 )
 from src.database.repositories import DataStore, PortfolioError
+from src.news import NewsProvider, NewsProviderError, news_score
 from src.portfolio.backtest import run_backtest
 from src.portfolio.risk import calculate_position_size
 
@@ -70,7 +71,10 @@ def overview(store: DataStore, provider: MarketDataProvider) -> None:
             icon = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡", "BLOCKED": "⚪"}.get(signal.action, "⚪")
             with st.container(border=True):
                 st.write(f"{icon} **{signal.symbol} · {signal.strategy}** — {signal.action} · {signal.score:.1f}/100")
-                st.caption(f"{signal.provider} · Konfidenz {signal.confidence:.0f}% · experimentell")
+                st.caption(
+                    f"{signal.provider} · Konfidenz {signal.confidence:.0f}% · "
+                    f"Nachrichtenfaktor {signal.news_factor:.2f} · experimentell"
+                )
     st.subheader("Strategievergleich")
     for portfolio in portfolios:
         value = store.portfolio_value(portfolio.id)
@@ -227,6 +231,11 @@ def agent_portfolio(store: DataStore, agent: TradingAgent) -> None:
                 f"Einstiegsquelle: {position.entry_provider} · letzter Kurs: {position.last_provider} · "
                 f"{position.entry_reason}"
             )
+            entry_news_count = len([value for value in position.entry_news_ids.split(",") if value])
+            st.caption(
+                f"Nachrichten beim Einstieg: Faktor {position.entry_news_factor:.2f} · "
+                f"{entry_news_count} verknüpfte Meldungen"
+            )
             quantity = st.number_input(
                 "Zu verkaufende Stückzahl", 0.001, float(position.quantity), float(position.quantity), key=f"sell-qty-{position.id}"
             )
@@ -253,6 +262,7 @@ def agent_portfolio(store: DataStore, agent: TradingAgent) -> None:
                             f"Manueller Verkauf blockiert: Kursdaten sind {age_minutes:.0f} Minuten alt."
                         )
                     actual_provider = source_name(frame, agent.provider)
+                    recent_news = store.list_news_items(symbol=position.symbol, max_age_hours=72)
                     store.close_position(
                         portfolio_id=portfolio.id,
                         symbol=position.symbol,
@@ -262,6 +272,8 @@ def agent_portfolio(store: DataStore, agent: TradingAgent) -> None:
                         provider=actual_provider,
                         is_demo=agent.provider.is_demo,
                         quantity=quantity,
+                        news_factor=news_score(recent_news),
+                        news_ids=tuple(item.external_id for item in recent_news),
                     )
                     st.success("Virtueller Verkauf gebucht.")
                     st.rerun()
@@ -287,19 +299,25 @@ def analysis_page(store: DataStore, provider: MarketDataProvider, settings: AppS
     frame = _safe_history(provider, symbol, interval, period)
     if frame.empty:
         return
+    recent_news = store.list_news_items(symbol=symbol, max_age_hours=72)
+    current_news_factor = news_score(recent_news)
     result = analyze_signal(
         symbol,
         frame,
         STRATEGIES[strategy_name],
         provider=source_name(frame, provider),
         stale_after_minutes=96 * 60 if interval == "1d" else settings.stale_after_minutes,
+        news_factor=current_news_factor,
     )
-    store.record_signal(result)
+    store.record_signal(result, recent_news)
     color = {SignalAction.BUY: "green", SignalAction.SELL: "red", SignalAction.HOLD: "orange"}.get(result.action, "gray")
     st.markdown(f"### :{color}[{result.action.value} · {result.score:.1f}/100]")
     st.caption(
         f"{result.provider} · Datenstand {result.data_timestamp:%Y-%m-%d %H:%M UTC} · "
         f"Konfidenz {result.confidence:.0f}% · experimentell"
+    )
+    st.caption(
+        f"Nachrichtenfaktor {current_news_factor:.2f} aus {len(recent_news)} Meldungen der letzten 72 Stunden"
     )
     if result.data_problem:
         st.error("Signal blockiert: " + result.data_problem)
@@ -362,6 +380,8 @@ def analysis_page(store: DataStore, provider: MarketDataProvider, settings: AppS
                     weight_version=result.weight_version,
                     provider=result.provider,
                     is_demo=provider.is_demo,
+                    news_factor=current_news_factor,
+                    news_ids=tuple(item.external_id for item in recent_news),
                 )
                 st.success("Virtueller Kauf ausgeführt. Keine echte Order wurde platziert.")
                 st.rerun()
@@ -381,12 +401,14 @@ def scanner(store: DataStore, provider: MarketDataProvider, settings: AppSetting
     for index, item in enumerate(items):
         try:
             frame = provider.history(MarketDataRequest(item.symbol, item.interval, recommended_period(item.interval)))
+            recent_news = store.list_news_items(symbol=item.symbol, max_age_hours=72)
             result = analyze_signal(
                 item.symbol,
                 frame,
                 STRATEGIES["Normal"],
                 provider=source_name(frame, provider),
                 stale_after_minutes=96 * 60 if item.interval == "1d" else settings.stale_after_minutes,
+                news_factor=news_score(recent_news),
             )
             indicator_data = add_indicators(frame)
             last = indicator_data.iloc[-1]
@@ -401,20 +423,58 @@ def scanner(store: DataStore, provider: MarketDataProvider, settings: AppSetting
                     "Trend": result.trend,
                 }
             )
-            store.record_signal(result)
+            store.record_signal(result, recent_news)
         except (ProviderError, ValueError) as exc:
             rows.append({"Symbol": item.symbol, "Signal": "BLOCKED", "Punkte": 0, "Problem": str(exc)})
         progress.progress((index + 1) / max(len(items), 1))
     st.dataframe(pd.DataFrame(rows).sort_values("Punkte", ascending=False), hide_index=True, width="stretch")
 
 
-def news_page(store: DataStore) -> None:
+def news_page(store: DataStore, provider: NewsProvider | None) -> None:
     st.title("Nachrichten")
-    st.info(
-        "Es ist noch keine belastbare echte Nachrichtenquelle konfiguriert. Deshalb zeigt die App hier keine "
-        "erfundenen Demo-Meldungen; die Nachrichtenkomponente der Bewertung bleibt neutral."
+    st.warning(
+        "Kostenlose Nachrichten sind nicht vollständig und die Stimmung ist nur eine vorsichtige "
+        "Schlagzeilen-Heuristik. Nachrichten können ein Signal verstärken, aber niemals allein einen Kauf auslösen."
     )
-    st.caption(f"Beobachtete Symbole: {', '.join(value.symbol for value in store.list_watchlist())}")
+    symbols = [value.symbol for value in store.list_watchlist()]
+    if provider is None:
+        st.info("Im Offline-Testmodus werden keine erfundenen Meldungen in der normalen Oberfläche angezeigt.")
+    elif st.button("Echte Nachrichten aktualisieren", type="primary", width="stretch"):
+        with st.spinner("Lade aktuelle Meldungen für die Watchlist …"):
+            try:
+                items = provider.get_news(symbols)
+                inserted = store.upsert_news(items)
+                st.success(f"{len(items)} Meldungen verarbeitet, {inserted} neu gespeichert.")
+            except NewsProviderError as exc:
+                st.error(str(exc))
+    records = store.list_news(limit=80)
+    if not records:
+        st.info("Noch keine echten Meldungen gespeichert. Aktualisiere den Feed oder starte den Agenten.")
+        return
+    st.caption(f"Quelle: {provider.name if provider else 'keine'} · {len(records)} gespeicherte Meldungen")
+    for record in records:
+        published = record.published_at
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=UTC)
+        age_hours = max((datetime.now(UTC) - published).total_seconds() / 3600, 0.0)
+        related = record.related_symbols.replace(",", ", ") or record.symbol
+        relevance = "direkt" if record.direct_relevance else "indirekt"
+        icon = {"positiv": "🟢", "negativ": "🔴"}.get(record.sentiment, "⚪")
+        with st.container(border=True):
+            st.write(f"{icon} **{record.title}**")
+            if record.summary:
+                st.write(record.summary)
+            st.caption(
+                f"{record.source} · {published:%d.%m.%Y %H:%M UTC} · vor {age_hours:.1f} h · "
+                f"Symbole: {related}"
+            )
+            st.caption(
+                f"Heuristik: {record.sentiment} · Einfluss {record.impact:.2f} · "
+                f"Quellengewicht {record.credibility:.2f} · Relevanz {relevance}"
+                + (" · möglicherweise bereits eingepreist" if record.possibly_priced_in else "")
+            )
+            if record.url:
+                st.link_button("Originalmeldung öffnen", record.url)
 
 
 def strategies_page() -> None:
@@ -501,6 +561,12 @@ def trade_journal(store: DataStore) -> None:
             st.write(f"Stop {trade.stop_loss:.4f} · Ziel {trade.take_profit:.4f}")
             st.write(f"Kaufgrund: {trade.entry_reason}")
             st.write(f"Verkaufsgrund: {trade.exit_reason}")
+            entry_news_count = len([value for value in trade.entry_news_ids.split(",") if value])
+            exit_news_count = len([value for value in trade.exit_news_ids.split(",") if value])
+            st.write(
+                f"Nachrichtenfaktor: {trade.entry_news_factor:.2f} ({entry_news_count} Meldungen) → "
+                f"{trade.exit_news_factor:.2f} ({exit_news_count} Meldungen)"
+            )
             st.caption(
                 f"Quellen: {trade.entry_provider} → {trade.exit_provider} · "
                 f"Strategie {trade.strategy_version} · Gewichte {trade.weight_version}"
@@ -546,6 +612,7 @@ def system_status(store: DataStore, provider: MarketDataProvider, settings: AppS
     st.write(f"Modus: **{'OFFLINE-TEST' if provider.is_demo else 'kostenlose reale Quellen mit Qualitätsprüfung'}**")
     st.write(f"Analyseintervall: **ca. {settings.analysis_interval_minutes} Minuten**")
     st.write(f"Zeitzone: **{settings.timezone}**")
+    st.write(f"Gespeicherte echte Meldungen: **{len(store.list_news(limit=500))}**")
     if last:
         st.write(f"Letzter Lauf: **{last.status}** · {last.started_at}")
         st.write(f"Signale: {last.generated_signals} · virtuelle Aktionen: {last.virtual_actions}")
@@ -555,5 +622,6 @@ def system_status(store: DataStore, provider: MarketDataProvider, settings: AppS
         st.info("Noch kein Agentenlauf protokolliert.")
     st.warning(
         "Kostenlose Kursquellen können verzögert oder lückenhaft sein. Zu kurze Reihen werden verworfen; "
-        "wenn alle passenden Realdatenquellen scheitern, wird das Signal blockiert. Nachrichten sind deaktiviert."
+        "wenn alle passenden Realdatenquellen scheitern, wird das Signal blockiert. "
+        "Fällt die Nachrichtenquelle aus, bleibt deren Bewertung neutral."
     )

@@ -13,6 +13,8 @@ SQLITE_COMPATIBILITY_COLUMNS = {
     "virtual_positions": {
         "entry_provider": "VARCHAR(80) NOT NULL DEFAULT 'unbekannt'",
         "last_provider": "VARCHAR(80) NOT NULL DEFAULT 'unbekannt'",
+        "entry_news_factor": "FLOAT NOT NULL DEFAULT 0.5",
+        "entry_news_ids": "TEXT NOT NULL DEFAULT ''",
         "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
     },
     "virtual_orders": {
@@ -22,7 +24,24 @@ SQLITE_COMPATIBILITY_COLUMNS = {
     "trades": {
         "entry_provider": "VARCHAR(80) NOT NULL DEFAULT 'unbekannt'",
         "exit_provider": "VARCHAR(80) NOT NULL DEFAULT 'unbekannt'",
+        "entry_news_factor": "FLOAT NOT NULL DEFAULT 0.5",
+        "exit_news_factor": "FLOAT NOT NULL DEFAULT 0.5",
+        "entry_news_ids": "TEXT NOT NULL DEFAULT ''",
+        "exit_news_ids": "TEXT NOT NULL DEFAULT ''",
         "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
+    },
+    "signals": {
+        "news_factor": "FLOAT NOT NULL DEFAULT 0.5",
+        "news_ids": "TEXT NOT NULL DEFAULT ''",
+    },
+    "news": {
+        "summary": "TEXT NOT NULL DEFAULT ''",
+        "url": "TEXT NOT NULL DEFAULT ''",
+        "credibility": "FLOAT NOT NULL DEFAULT 0.5",
+        "direct_relevance": "BOOLEAN NOT NULL DEFAULT 1",
+        "possibly_priced_in": "BOOLEAN NOT NULL DEFAULT 0",
+        "related_symbols": "TEXT NOT NULL DEFAULT ''",
+        "fetched_at": "DATETIME",
     },
 }
 

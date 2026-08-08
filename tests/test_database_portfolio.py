@@ -55,6 +55,8 @@ def test_virtual_buy_sell_and_journal(store):
         provider="Test-Realdaten",
         is_demo=False,
         idempotency_key="buy-1",
+        news_factor=0.7,
+        news_ids=("entry-news-1", "entry-news-2"),
     )
     assert order.side == "BUY"
     assert len(store.list_positions(portfolio.id)) == 1
@@ -82,6 +84,8 @@ def test_virtual_buy_sell_and_journal(store):
         provider="Test-Realdaten",
         is_demo=False,
         idempotency_key="sell-1",
+        news_factor=0.3,
+        news_ids=("exit-news-1",),
     )
     assert store.list_positions(portfolio.id) == []
     trades = store.list_trades(portfolio.id)
@@ -91,6 +95,10 @@ def test_virtual_buy_sell_and_journal(store):
     assert trades[0].weight_version == "v1"
     assert trades[0].entry_provider == "Test-Realdaten"
     assert trades[0].exit_provider == "Test-Realdaten"
+    assert trades[0].entry_news_factor == 0.7
+    assert trades[0].exit_news_factor == 0.3
+    assert trades[0].entry_news_ids == "entry-news-1,entry-news-2"
+    assert trades[0].exit_news_ids == "exit-news-1"
     assert trades[0].is_demo is False
 
 
