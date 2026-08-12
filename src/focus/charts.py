@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from .analysis import SPEC_BY_KEY, FocusPosition, IntradaySignal, TimeframeAnalysis
-from .quote import LiveQuote
+from .quote import LiveQuote, resample_intraday_candles
 
 
 def day_signal_chart(
@@ -19,7 +19,8 @@ def day_signal_chart(
 ) -> go.Figure:
     """Ein einziger Tageschart mit Livekurs und den tatsächlich erzeugten Signalen."""
 
-    visible = data.copy()
+    visible = resample_intraday_candles(data, 5)
+    visible = visible.loc[(visible["volume"] > 0) | (visible.index == visible.index[-1])].copy()
     visible.index = visible.index.tz_convert("Europe/Berlin")
     figure = go.Figure()
     figure.add_trace(
@@ -29,11 +30,14 @@ def day_signal_chart(
             high=visible["high"],
             low=visible["low"],
             close=visible["close"],
-            name="D-Wave heute",
+            name="5-Minuten-Kerzen",
             increasing_line_color="#22c55e",
             decreasing_line_color="#ef4444",
-            increasing_fillcolor="rgba(34,197,94,.45)",
-            decreasing_fillcolor="rgba(239,68,68,.45)",
+            increasing_fillcolor="rgba(34,197,94,.72)",
+            decreasing_fillcolor="rgba(239,68,68,.72)",
+            increasing_line_width=2,
+            decreasing_line_width=2,
+            whiskerwidth=0.8,
         )
     )
     current_x = visible.index[-1]
@@ -149,7 +153,7 @@ def day_signal_chart(
         height=720,
         margin={"l": 12, "r": 18, "t": 20, "b": 18},
         xaxis_rangeslider_visible=False,
-        xaxis={"title": "Heutiger Handel", "tickformat": "%H:%M"},
+        xaxis={"title": "Heutiger Handel · echte 5-Minuten-Candlesticks", "tickformat": "%H:%M"},
         yaxis={"title": "EUR", "side": "right", "fixedrange": False},
         hovermode="x unified",
         showlegend=True,

@@ -65,6 +65,10 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     )
 
     assert len(figure.data) == 2
+    assert len(figure.data[0].open) == 8
+    assert figure.data[0].high[0] > max(figure.data[0].open[0], figure.data[0].close[0])
+    assert figure.data[0].low[0] < min(figure.data[0].open[0], figure.data[0].close[0])
+    assert figure.data[0].whiskerwidth == 0.8
     assert any("HALTEN" in annotation.text for annotation in figure.layout.annotations)
     assert figure.layout.uirevision == "dwave-trading-day"
     assert any("Einstand" in annotation.text for annotation in figure.layout.annotations)

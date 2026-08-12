@@ -12,13 +12,15 @@ Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktu
 
 ## Was im Chart sichtbar ist
 
-- alle heute bei Tradegate ausgeführten Umsätze als Ein-Minuten-Kerzen,
+- alle heute bei Tradegate ausgeführten Umsätze als gut lesbare 5-Minuten-Candlesticks mit Körper und Dochten,
 - der laufende Mittelpunkt zwischen Geld- und Briefkurs,
 - der aktuelle Geld-/Briefbereich,
 - das aktuelle Signal direkt im Chart,
 - bei einer gespeicherten Position der Einstandskurs und der ungefähre Gewinn oder Verlust,
 - Stop und technisches Ziel, wenn die aktuelle Handlung diese Marken benötigt,
 - Kaufen-, Nachkaufen- und Verkaufen-Markierungen, die während der geöffneten Sitzung tatsächlich erzeugt wurden.
+
+Die sichtbaren Kerzen werden aus echten Open-, High-, Low- und Close-Werten der jeweiligen fünf Minuten gebaut. Der Körper reicht von Eröffnung bis Schluss; die Dochte reichen bis zum höchsten und niedrigsten tatsächlich beobachteten Kurs. Eine Kerze kann deshalb bei einem echten Doji oder einem Intervall ohne zusätzliche Preisspanne naturgemäß sehr schmal sein.
 
 Die komplette Anzeige und die Signallogik werden bei geöffneter App automatisch alle zehn Sekunden neu ausgeführt. Außerhalb der Tradegate-Handelszeit bleibt der letzte Handelstag sichtbar; über Nacht entstehen keine neuen deutschen Kurse.
 
