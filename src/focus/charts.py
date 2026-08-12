@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -40,7 +42,6 @@ def day_signal_chart(
         raise ValueError("Das Kerzenintervall wird nicht unterstützt.")
     candle_label = _candle_trace_label(candle_minutes)
     visible = resample_intraday_candles(data, candle_minutes)
-    visible = visible.loc[(visible["volume"] > 0) | (visible.index == visible.index[-1])].copy()
     visible.index = visible.index.tz_convert("Europe/Berlin")
     figure = go.Figure()
     figure.add_trace(
@@ -60,6 +61,17 @@ def day_signal_chart(
             whiskerwidth=0.8,
         )
     )
+    if candle_minutes == 1:
+        figure.add_trace(
+            go.Scatter(
+                x=visible.index,
+                y=visible["close"],
+                mode="lines",
+                name="Minutenverlauf",
+                line={"color": "rgba(148,163,184,.55)", "width": 1, "shape": "hv"},
+                hoverinfo="skip",
+            )
+        )
     current_x = visible.index[-1]
     figure.add_trace(
         go.Scatter(
@@ -144,6 +156,9 @@ def day_signal_chart(
             f"<br>Investiert {invested_eur:.2f} € · Verkaufswert {current_value:.2f} €"
             f"<br>Plus/Minus {pnl_eur:+.2f} € · {pnl_pct:+.2f} %"
         )
+    forecast_zone = ""
+    if signal.forecast_low is not None and signal.forecast_high is not None:
+        forecast_zone = f" · Zone {signal.forecast_low:.3f}–{signal.forecast_high:.3f} €"
     figure.add_annotation(
         xref="paper",
         yref="paper",
@@ -155,8 +170,9 @@ def day_signal_chart(
         showarrow=False,
         text=(
             f"<b>{signal.headline}</b><br>"
-            f"Geld {quote.bid:.3f} € · Brief {quote.ask:.3f} € · "
-            f"Signalstärke {signal.score:.0f}/100{position_text}"
+            f"Geld {quote.bid:.3f} € · Brief {quote.ask:.3f} €<br>"
+            f"5–30 Min {signal.forecast_direction} · Modellwert {signal.score:.0f}/100{forecast_zone}"
+            f"{position_text}"
         ),
         bgcolor="rgba(15,23,42,.88)",
         bordercolor=signal.color,
@@ -172,14 +188,30 @@ def day_signal_chart(
         xanchor="left",
         yanchor="bottom",
         showarrow=False,
-        text="Signalprüfung: 1 Min · 5 Min · 15 Min · Stunde · Tag · Woche · Monat",
+        text=(
+            f"Ensemble: Trend · Momentum · Ausbruch · Rücklauf · Kontext | "
+            f"Marktphase: {signal.market_regime}"
+        ),
         font={"size": 11, "color": "#94a3b8"},
     )
+    xaxis: dict[str, object] = {
+        "title": f"Heutiger Handel · echte {candle_label}",
+        "tickformat": "%H:%M",
+    }
+    if candle_minutes == 1 and len(visible) > 180:
+        active_minutes = visible.index[visible["volume"] > 0]
+        if len(active_minutes) >= 90:
+            range_start = active_minutes[-90]
+        elif len(active_minutes):
+            range_start = active_minutes[0]
+        else:
+            range_start = visible.index[-180]
+        xaxis["range"] = [range_start, visible.index[-1] + timedelta(minutes=3)]
     figure.update_layout(
         height=720,
         margin={"l": 12, "r": 18, "t": 20, "b": 18},
         xaxis_rangeslider_visible=False,
-        xaxis={"title": f"Heutiger Handel · echte {candle_label}", "tickformat": "%H:%M"},
+        xaxis=xaxis,
         yaxis={"title": "EUR", "side": "right", "fixedrange": False},
         hovermode="x unified",
         showlegend=True,

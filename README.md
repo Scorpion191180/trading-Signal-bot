@@ -22,6 +22,8 @@ Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktu
 
 Das sichtbare Kerzenintervall kann direkt über dem Chart auf **1, 5, 15 oder 30 Minuten** sowie **1, 2 oder 5 Stunden** gestellt werden. Stundenkerzen beginnen passend zur L&S-Sitzung um 07:30 Uhr statt an einer willkürlichen vollen Uhrzeit. Die Auswahl verändert nur die Darstellung; die Signallogik prüft weiterhin unabhängig ihre festen Zeitebenen.
 
+Die 1-Minuten-Ansicht startet bei höchstens den letzten 90 tatsächlich aktiven Handelsminuten; bei einem ruhigen Tag wird dadurch automatisch mehr vom Tag gezeigt. Ein dezenter Stufenverlauf verbindet die einzelnen Abschlüsse. Herauszoomen zeigt weiterhin den kompletten Handelstag. Minuten ohne eigenen L&S-Abschluss werden mit dem zuletzt gehandelten Kurs fortgeführt, damit die Zeitachse nicht aus großen Löchern besteht; das Volumen dieser Minuten bleibt null.
+
 Für Positionswert und Plus/Minus verwendet die App den **L&S-Geldkurs**, weil dieser für einen sofortigen Verkauf maßgeblich ist. Für einen Kauf ist dagegen der Briefkurs relevant. Beide Werte stehen getrennt im Chart; ihre Mitte dient nur als technische Orientierung.
 
 Die sichtbaren Kerzen werden aus echten Open-, High-, Low- und Close-Werten des gewählten Zeitraums gebaut. Der Körper reicht von Eröffnung bis Schluss; die Dochte reichen bis zum höchsten und niedrigsten tatsächlich beobachteten Kurs. Eine Kerze kann deshalb bei einem echten Doji oder einem Intervall ohne zusätzliche Preisspanne naturgemäß sehr schmal sein.
@@ -42,6 +44,16 @@ Aus Einstandskurs und Stückzahl zeigt der Signalkasten außerdem jederzeit den 
 
 ## Signallogik im Hintergrund
 
+Die 5–30-Minuten-Prognose kombiniert fünf Ansätze, statt sich auf einen einzelnen Indikator zu verlassen:
+
+- **Trend:** EMA-Richtung über 1, 5, 15 und 60 Minuten,
+- **Momentum:** RSI und Veränderung des MACD-Histogramms,
+- **Ausbruch:** Lage in der jüngsten Handelsspanne und Volumenbestätigung,
+- **Rücklauf:** Abstand zum 20-Kerzen-Mittelwert in einer Seitwärtsphase,
+- **Kontext:** Stunde, Tag, Woche und Monat als Filter gegen Trades in einen starken Gegentrend.
+
+Die Gewichtung wechselt zwischen Trend-, Seitwärts- und hoher Volatilitätsphase. Der laufende Geld-/Brief-Spread und – sofern vorhanden – das Verhältnis der angebotenen Stückzahlen wirken als Liquiditätsfilter. Ab 0,6 Prozent Spread wird kein neuer 5–30-Minuten-Einstieg freigegeben. Die angezeigte Zone ist ein ATR-basierter technischer Schwankungsbereich und keine Kursgarantie. Der Modellwert von 0 bis 100 ist ausdrücklich **keine kalibrierte Trefferwahrscheinlichkeit**; seine Qualität muss mit künftigen echten Signalen weiter außerhalb der Entwicklungsdaten geprüft werden.
+
 Obwohl nur ein Chart sichtbar ist, prüft die App weiterhin mehrere Zeitebenen:
 
 - 1 Minute erzeugt den Auslöser,
@@ -51,6 +63,8 @@ Obwohl nur ein Chart sichtbar ist, prüft die App weiterhin mehrere Zeitebenen:
 - Woche und Monat dienen nur als Risiko- und Kontextfilter.
 
 Verwendet werden EMA-Trend, RSI 14, MACD-Histogramm, ATR, 20-Kerzen-Struktur und relatives Volumen. Ein Kaufsignal benötigt kurzfristige Volumenbestätigung. Die längeren Ebenen verlängern den geplanten Trade nicht.
+
+Methodisch berücksichtigt die Umsetzung sowohl die dokumentierte Trendfortsetzung als auch deren Grenzen und kurzfristige Rückläufe: [Time Series Momentum (Journal of Financial Economics)](https://www.sciencedirect.com/science/article/pii/S0304405X11002613), [Short-Horizon Return Reversals and the Bid-Ask Spread (Journal of Financial Intermediation)](https://www.sciencedirect.com/science/article/pii/S1042957385710066). Eine spätere echte Kalibrierung darf nur zeitlich vorwärts testen; zufällig gemischte Trainings- und Testdaten würden Informationen aus der Zukunft einschleusen. Dafür ist ein Walk-forward-Verfahren wie [TimeSeriesSplit](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) vorgesehen.
 
 ## Datenquellen
 

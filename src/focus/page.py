@@ -166,6 +166,12 @@ def _automatic_day_chart(position: FocusPosition, candle_minutes: int) -> None:
         now=datetime.now(UTC),
         live_price=quote.midpoint,
         session_close=time(22, 0) if fallback_active else time(23, 0),
+        spread_percent=(quote.ask - quote.bid) / quote.midpoint * 100,
+        order_imbalance=(quote.bid_size - quote.ask_size) / (quote.bid_size + quote.ask_size)
+        if quote.bid_size is not None
+        and quote.ask_size is not None
+        and quote.bid_size + quote.ask_size > 0
+        else None,
     )
     events = _record_signal_event(signal.action, quote.midpoint, candles.index[-1])
     st.plotly_chart(

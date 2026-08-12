@@ -90,6 +90,23 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     assert "1-Stunde-Kerzen" in hour_figure.layout.xaxis.title.text
     assert hour_figure.layout.uirevision == "dwave-trading-day-60"
 
+    quiet_minutes = candles.reindex(
+        pd.date_range(candles.index[0], periods=240, freq="1min", tz="UTC")
+    ).ffill()
+    quiet_minutes["volume"] = 0.0
+    quiet_minutes.iloc[::60, quiet_minutes.columns.get_loc("volume")] = 100.0
+    minute_figure = day_signal_chart(
+        quiet_minutes,
+        quote,
+        signal,
+        FocusPosition(),
+        [],
+        candle_minutes=1,
+    )
+    assert len(minute_figure.data[0].x) == 240
+    assert minute_figure.data[1].name == "Minutenverlauf"
+    assert pd.Timestamp(minute_figure.layout.xaxis.range[0]) == quiet_minutes.index[0].tz_convert("Europe/Berlin")
+
 
 def test_distant_entry_does_not_flatten_the_day_chart():
     index = pd.date_range("2026-08-12 08:00", periods=40, freq="1min", tz="UTC")

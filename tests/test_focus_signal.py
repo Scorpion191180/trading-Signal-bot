@@ -82,6 +82,9 @@ def test_short_term_confirmation_creates_buy_and_profitable_add_signal():
     assert buy.holding_period == "5–30 Minuten"
     assert buy.entry_low < buy.current_price < buy.entry_high
     assert buy.stop_loss < buy.current_price < buy.target
+    assert buy.forecast_direction == "EHER STEIGEND"
+    assert buy.forecast_low < buy.current_price < buy.forecast_high
+    assert len(buy.strategy_votes) == 5
 
 
 def test_add_signal_does_not_average_down():
@@ -96,6 +99,24 @@ def test_add_signal_does_not_average_down():
     )
     assert signal.action == "HOLD"
     assert "kein Nachkauf im Verlust" in signal.headline
+
+
+def test_wide_spread_blocks_a_short_term_entry():
+    now = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+    analyses, enriched, _ = analyze_timeframes(_frames(now))
+
+    signal = build_intraday_signal(
+        analyses,
+        enriched,
+        FocusPosition(),
+        now=now,
+        enforce_market_hours=False,
+        spread_percent=1.2,
+    )
+
+    assert signal.action == "WAIT"
+    assert "Spread" in signal.warning
+    assert signal.spread_percent == 1.2
 
 
 def test_live_tradegate_price_is_used_for_position_and_display():

@@ -94,6 +94,26 @@ class IntradaySignal:
     warning: str
     data_age_minutes: float
     market_open: bool
+    forecast_direction: str = "UNENTSCHIEDEN"
+    forecast_low: float | None = None
+    forecast_high: float | None = None
+    market_regime: str = "unklar"
+    strategy_votes: tuple[str, ...] = ()
+    spread_percent: float | None = None
+
+
+@dataclass(frozen=True)
+class StrategyEnsemble:
+    """Gemeinsame 5–30-Minuten-Einschätzung mehrerer unabhängiger Ansätze."""
+
+    score: float
+    direction: str
+    expected_low: float
+    expected_high: float
+    regime: str
+    votes: tuple[str, ...]
+    positive_votes: int
+    negative_votes: int
 
 
 def add_focus_indicators(frame: pd.DataFrame, spec: TimeframeSpec) -> pd.DataFrame:
@@ -236,6 +256,146 @@ def _signal_strength(score: float) -> str:
     return "stark" if score >= 72 or score <= 28 else "moderat" if score >= 62 or score <= 40 else "schwach"
 
 
+def _bounded_score(value: float) -> float:
+    return float(min(max(value, 0.0), 100.0))
+
+
+def _latest_finite(frame: pd.DataFrame, column: str, fallback: float) -> float:
+    value = frame[column].iloc[-1]
+    return float(value) if np.isfinite(value) else fallback
+
+
+def _momentum_strategy(enriched: dict[str, pd.DataFrame], analyses: dict[str, TimeframeAnalysis]) -> float:
+    components: list[float] = []
+    for key in ("1m", "5m"):
+        frame = enriched[key]
+        rsi_value = analyses[key].rsi
+        rsi_score = _bounded_score(50 + (rsi_value - 50) * 1.2)
+        histogram = _latest_finite(frame, "macd_hist", 0.0)
+        previous_histogram = float(frame["macd_hist"].iloc[-2])
+        if histogram > 0 and histogram >= previous_histogram:
+            macd_score = 78.0
+        elif histogram > 0:
+            macd_score = 62.0
+        elif histogram < 0 and histogram <= previous_histogram:
+            macd_score = 22.0
+        else:
+            macd_score = 38.0
+        components.append((rsi_score * 0.45) + (macd_score * 0.55))
+    return sum(components) / len(components)
+
+
+def _breakout_strategy(enriched: dict[str, pd.DataFrame], analyses: dict[str, TimeframeAnalysis]) -> float:
+    components: list[float] = []
+    for key in ("1m", "5m"):
+        latest = enriched[key].iloc[-1]
+        close = float(latest["close"])
+        previous_high = float(latest["previous_high_20"])
+        previous_low = float(latest["previous_low_20"])
+        relative_volume = analyses[key].relative_volume or 0.0
+        if close > previous_high:
+            score = 88.0 if relative_volume >= 1.0 else 72.0
+        elif close < previous_low:
+            score = 12.0 if relative_volume >= 1.0 else 28.0
+        elif previous_high > previous_low:
+            location = (close - previous_low) / (previous_high - previous_low)
+            score = 20 + 60 * location
+        else:
+            score = 50.0
+        components.append(_bounded_score(score))
+    return sum(components) / len(components)
+
+
+def _mean_reversion_strategy(enriched: dict[str, pd.DataFrame], analyses: dict[str, TimeframeAnalysis]) -> float:
+    scores: list[float] = []
+    for key in ("1m", "5m"):
+        close = enriched[key]["close"].tail(20)
+        deviation = float(close.std(ddof=0))
+        z_score = (float(close.iloc[-1]) - float(close.mean())) / deviation if deviation > 0 else 0.0
+        rsi_distance = analyses[key].rsi - 50
+        scores.append(_bounded_score(50 - z_score * 18 - rsi_distance * 0.35))
+    return sum(scores) / len(scores)
+
+
+def build_strategy_ensemble(
+    analyses: dict[str, TimeframeAnalysis],
+    enriched: dict[str, pd.DataFrame],
+    price: float,
+    *,
+    spread_percent: float | None = None,
+    order_imbalance: float | None = None,
+) -> StrategyEnsemble:
+    """Kombiniert Trend, Momentum, Ausbruch, Rücklauf und höheren Kontext ohne Look-ahead."""
+
+    trend_score = sum(
+        analyses[key].score * weight
+        for key, weight in {"1m": 0.30, "5m": 0.35, "15m": 0.25, "1h": 0.10}.items()
+    )
+    momentum_score = _momentum_strategy(enriched, analyses)
+    breakout_score = _breakout_strategy(enriched, analyses)
+    reversion_score = _mean_reversion_strategy(enriched, analyses)
+    context_score = sum(
+        analyses[key].score * weight
+        for key, weight in {"1h": 0.50, "1d": 0.30, "1wk": 0.15, "1mo": 0.05}.items()
+    )
+
+    five_minute = enriched["5m"]
+    latest_five = five_minute.iloc[-1]
+    atr_five = _latest_finite(five_minute, "atr_14", price * 0.006)
+    ema_separation = abs(float(latest_five["ema_fast"]) - float(latest_five["ema_slow"])) / max(
+        atr_five, price * 0.001
+    )
+    aligned_trend = (analyses["1m"].score >= 58 and analyses["5m"].score >= 58) or (
+        analyses["1m"].score <= 42 and analyses["5m"].score <= 42
+    )
+    recent = five_minute.tail(12)
+    recent_range = (float(recent["high"].max()) - float(recent["low"].min())) / price
+    if aligned_trend and ema_separation >= 0.10:
+        regime = "Trend"
+        weights = {"Trend": 0.34, "Momentum": 0.28, "Ausbruch": 0.25, "Rücklauf": 0.03, "Kontext": 0.10}
+    elif recent_range >= 0.04:
+        regime = "hohe Volatilität"
+        weights = {"Trend": 0.25, "Momentum": 0.20, "Ausbruch": 0.20, "Rücklauf": 0.20, "Kontext": 0.15}
+    else:
+        regime = "Seitwärts"
+        weights = {"Trend": 0.15, "Momentum": 0.15, "Ausbruch": 0.15, "Rücklauf": 0.45, "Kontext": 0.10}
+
+    strategy_scores = {
+        "Trend": trend_score,
+        "Momentum": momentum_score,
+        "Ausbruch": breakout_score,
+        "Rücklauf": reversion_score,
+        "Kontext": context_score,
+    }
+    score = sum(strategy_scores[name] * weight for name, weight in weights.items())
+    if order_imbalance is not None and np.isfinite(order_imbalance):
+        score += min(max(order_imbalance, -1.0), 1.0) * 4
+    if spread_percent is not None and spread_percent > 0.6:
+        score = 50 + (score - 50) * 0.70
+    score = round(_bounded_score(score), 1)
+    direction = "EHER STEIGEND" if score >= 58 else "EHER FALLEND" if score <= 42 else "SEITWÄRTS"
+
+    one_minute_atr = _latest_finite(enriched["1m"], "atr_14", price * 0.006)
+    expected_move = max(atr_five * 1.35, one_minute_atr * np.sqrt(15), price * 0.003)
+    directional_shift = ((score - 50) / 50) * expected_move * 0.35
+    expected_low = max(price + directional_shift - expected_move, 0.001)
+    expected_high = price + directional_shift + expected_move
+    votes = tuple(
+        f"{name} {value:.0f} {'↑' if value >= 58 else '↓' if value <= 42 else '→'}"
+        for name, value in strategy_scores.items()
+    )
+    return StrategyEnsemble(
+        score=score,
+        direction=direction,
+        expected_low=float(round(expected_low, 3)),
+        expected_high=float(round(expected_high, 3)),
+        regime=regime,
+        votes=votes,
+        positive_votes=sum(value >= 58 for value in strategy_scores.values()),
+        negative_votes=sum(value <= 42 for value in strategy_scores.values()),
+    )
+
+
 def build_intraday_signal(
     analyses: dict[str, TimeframeAnalysis],
     enriched: dict[str, pd.DataFrame],
@@ -246,6 +406,8 @@ def build_intraday_signal(
     maximum_data_age_minutes: float = 4.0,
     live_price: float | None = None,
     session_close: time = time(23, 0),
+    spread_percent: float | None = None,
+    order_imbalance: float | None = None,
 ) -> IntradaySignal:
     current_time = now or datetime.now(UTC)
     required = ("1m", "5m", "15m", "1h", "1d", "1wk", "1mo")
@@ -285,13 +447,14 @@ def build_intraday_signal(
     stop_loss = price - one_minute_atr
     target = price + (1.5 * one_minute_atr)
 
-    weights = {"1m": 0.25, "5m": 0.35, "15m": 0.20, "1h": 0.10, "1d": 0.10}
-    score = sum(analyses[key].score * weight for key, weight in weights.items())
-    if analyses["1wk"].score >= 58 and analyses["1mo"].score >= 52:
-        score += 2
-    elif analyses["1wk"].score <= 38 and analyses["1mo"].score <= 38:
-        score -= 5
-    score = round(min(max(score, 0.0), 100.0), 1)
+    forecast = build_strategy_ensemble(
+        analyses,
+        enriched,
+        price,
+        spread_percent=spread_percent,
+        order_imbalance=order_imbalance,
+    )
+    score = forecast.score
 
     if enforce_market_hours and not market_open:
         return IntradaySignal(
@@ -310,6 +473,12 @@ def build_intraday_signal(
             "Der nächste Kurs kann mit einer Lücke eröffnen; jetzt keine Handlung ableiten.",
             age_minutes,
             False,
+            forecast.direction,
+            forecast.expected_low,
+            forecast.expected_high,
+            forecast.regime,
+            forecast.votes,
+            spread_percent,
         )
     if age_minutes > maximum_data_age_minutes:
         return IntradaySignal(
@@ -328,6 +497,12 @@ def build_intraday_signal(
             "Für einen 5–30-Minuten-Trade sind verzögerte Gratisdaten nicht sicher genug.",
             age_minutes,
             market_open,
+            forecast.direction,
+            forecast.expected_low,
+            forecast.expected_high,
+            forecast.regime,
+            forecast.votes,
+            spread_percent,
         )
 
     short_volume = max(
@@ -337,6 +512,7 @@ def build_intraday_signal(
             analyses["5m"].relative_volume or 0.0,
         )
     ) >= 0.8
+    liquidity_veto = spread_percent is not None and spread_percent > 0.6
     short_trigger = (
         analyses["1m"].score >= 62
         and analyses["5m"].score >= 62
@@ -344,21 +520,25 @@ def build_intraday_signal(
         and analyses["1m"].rsi <= 73
         and analyses["1m"].setup in {"Ausbruch", "Trend-Rücksetzer"}
         and short_volume
+        and forecast.positive_votes >= 3
+        and not liquidity_veto
     )
     context_veto = analyses["1h"].score < 38 or analyses["1d"].score < 35
     bearish_exit = analyses["1m"].score <= 38 and analyses["5m"].score <= 42
     reasons = (
+        f"Marktphase {forecast.regime}: " + " · ".join(forecast.votes),
         f"1 Minute {analyses['1m'].score:.0f} · 5 Minuten {analyses['5m'].score:.0f} · "
         f"15 Minuten {analyses['15m'].score:.0f}",
-        f"Auslöser: {analyses['1m'].setup}; Stundenfilter {analyses['1h'].trend.lower()}",
-        f"Tages-/Wochenkontext: {analyses['1d'].trend.lower()} / {analyses['1wk'].trend.lower()} · "
-        f"Volumen {'bestätigt' if short_volume else 'zu schwach'}",
+        f"Volumen {'bestätigt' if short_volume else 'zu schwach'} · "
+        + (f"Spread {spread_percent:.2f} %" if spread_percent is not None else "Spread nicht verfügbar"),
     )
 
     action = "WAIT"
     headline = "WARTEN – noch kein sauberer Einstieg"
     color = "#f59e0b"
     warning = "Kein Trade, bis 1- und 5-Minuten-Chart gemeinsam bestätigen."
+    if liquidity_veto:
+        warning = "Kein Einstieg: Der Geld-/Brief-Spread ist für einen 5–30-Minuten-Trade zu groß."
     if position.invested:
         if bearish_exit or score <= 38:
             action, headline, color = "SELL", "VERKAUFEN – kurzfristiger Trend kippt", "#ef4444"
@@ -393,4 +573,10 @@ def build_intraday_signal(
         warning=warning,
         data_age_minutes=age_minutes,
         market_open=market_open,
+        forecast_direction=forecast.direction,
+        forecast_low=forecast.expected_low,
+        forecast_high=forecast.expected_high,
+        market_regime=forecast.regime,
+        strategy_votes=forecast.votes,
+        spread_percent=spread_percent,
     )
