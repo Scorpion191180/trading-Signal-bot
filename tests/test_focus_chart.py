@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pandas as pd
+
+from src.focus.analysis import FocusPosition, IntradaySignal
+from src.focus.charts import day_signal_chart
+from src.focus.quote import LiveQuote
+
+
+def test_day_signal_chart_contains_live_price_position_and_signal():
+    index = pd.date_range("2026-08-12 08:00", periods=40, freq="1min", tz="UTC")
+    values = pd.Series(range(40), index=index, dtype=float) / 100 + 17
+    candles = pd.DataFrame(
+        {
+            "open": values.shift(1).fillna(values.iloc[0]),
+            "high": values + 0.02,
+            "low": values - 0.02,
+            "close": values,
+            "volume": 100.0,
+        },
+        index=index,
+    )
+    quote = LiveQuote(
+        provider="Tradegate BSX Level 1",
+        venue="Tradegate BSX",
+        isin="US26740W1099",
+        bid=17.38,
+        ask=17.40,
+        bid_size=5000,
+        ask_size=5000,
+        last=17.39,
+        high=17.45,
+        low=16.95,
+        change_percent=1.0,
+        volume=10000,
+        fetched_at=datetime(2026, 8, 12, 8, 40, tzinfo=UTC),
+        refresh_seconds=10,
+    )
+    signal = IntradaySignal(
+        action="HOLD",
+        headline="HALTEN / BEOBACHTEN",
+        score=60,
+        strength="schwach",
+        color="#64748b",
+        current_price=17.39,
+        entry_low=None,
+        entry_high=None,
+        stop_loss=17.20,
+        target=17.60,
+        holding_period="5–30 Minuten",
+        reasons=(),
+        warning="Beobachten",
+        data_age_minutes=0,
+        market_open=True,
+    )
+
+    figure = day_signal_chart(
+        candles,
+        quote,
+        signal,
+        FocusPosition(invested=True, average_price=17.1, quantity=10),
+        [],
+    )
+
+    assert len(figure.data) == 2
+    assert any("HALTEN" in annotation.text for annotation in figure.layout.annotations)
+    assert figure.layout.uirevision == "dwave-trading-day"
+    assert any("Einstand" in annotation.text for annotation in figure.layout.annotations)
+
+
+def test_distant_entry_does_not_flatten_the_day_chart():
+    index = pd.date_range("2026-08-12 08:00", periods=40, freq="1min", tz="UTC")
+    candles = pd.DataFrame(
+        {
+            "open": 17.0,
+            "high": 17.2,
+            "low": 16.9,
+            "close": 17.1,
+            "volume": 100.0,
+        },
+        index=index,
+    )
+    quote = LiveQuote(
+        "Tradegate BSX Level 1",
+        "Tradegate BSX",
+        "US26740W1099",
+        17.09,
+        17.11,
+        None,
+        None,
+        17.1,
+        17.2,
+        16.9,
+        0.0,
+        1000,
+        datetime(2026, 8, 12, 8, 40, tzinfo=UTC),
+        10,
+    )
+    signal = IntradaySignal(
+        "NO_SIGNAL",
+        "KEIN SIGNAL",
+        50,
+        "keine",
+        "#64748b",
+        17.1,
+        None,
+        None,
+        None,
+        None,
+        "5–30 Minuten",
+        (),
+        "Warten",
+        0,
+        True,
+    )
+
+    figure = day_signal_chart(candles, quote, signal, FocusPosition(True, 25.0, 10), [])
+
+    assert not any("Einstand" in annotation.text for annotation in figure.layout.annotations)

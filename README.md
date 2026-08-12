@@ -1,4 +1,4 @@
-# D-Wave Kurzfrist-Signal
+# D-Wave Tageschart mit Kurzfrist-Signalen
 
 Eine bewusst reduzierte Streamlit-App für genau ein Instrument:
 
@@ -6,83 +6,57 @@ Eine bewusst reduzierte Streamlit-App für genau ein Instrument:
 - deutsches Börsenkürzel **RQ0**
 - WKN **A3DSV9**
 - ISIN **US26740W1099**
-- Kurswährung **EUR**
 - geplanter Trade-Horizont **5 bis 30 Minuten**
 
-Die App führt keine Order aus. Sie zeigt eine technische Einschätzung als **Kaufen**, **Warten**, **Halten**, **Nachkaufen** oder **Verkaufen**. Das ist keine Anlageberatung und keine Erfolgs- oder Gewinngarantie.
+Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktualisierten Tageschart. Die App führt keine Order aus. Ihre technischen Signale sind keine Anlageberatung und keine Erfolgs- oder Gewinngarantie.
 
-## Was jetzt im Mittelpunkt steht
+## Was im Chart sichtbar ist
 
-Die bisherige Navigation mit Watchlist, drei Strategiedepots, Scanner, Journal und vielen Einzelseiten wurde aus der normalen Oberfläche entfernt. Sichtbar ist nur noch:
+- alle heute bei Tradegate ausgeführten Umsätze als Ein-Minuten-Kerzen,
+- der laufende Mittelpunkt zwischen Geld- und Briefkurs,
+- der aktuelle Geld-/Briefbereich,
+- das aktuelle Signal direkt im Chart,
+- bei einer gespeicherten Position der Einstandskurs und der ungefähre Gewinn oder Verlust,
+- Stop und technisches Ziel, wenn die aktuelle Handlung diese Marken benötigt,
+- Kaufen-, Nachkaufen- und Verkaufen-Markierungen, die während der geöffneten Sitzung tatsächlich erzeugt wurden.
 
-1. der laufende deutsche D-Wave-Geld-/Briefkurs von Tradegate,
-2. ein einziges aktuelles Signal,
-3. höchstens drei kurze Begründungen,
-4. gegebenenfalls Einstiegszone, technischer Stop und technisches Ziel,
-5. die Bestätigung auf 1, 5 und 15 Minuten,
-6. eine frei wählbare normale Chartansicht von 1 Minute bis Monat,
-7. der eigene Positionsstatus mit Einstandskurs und Stückzahl.
+Die komplette Anzeige und die Signallogik werden bei geöffneter App automatisch alle zehn Sekunden neu ausgeführt. Außerhalb der Tradegate-Handelszeit bleibt der letzte Handelstag sichtbar; über Nacht entstehen keine neuen deutschen Kurse.
 
-Die alten modularen Komponenten bleiben vorerst im Repository, werden von `app.py` aber nicht mehr als Navigation angeboten.
+## Was mit der Position geschieht
 
-## Signallogik für 5–30 Minuten
+Die Positionseingabe ist absichtlich zugeklappt. Sie beeinflusst die Handlung im Chart:
 
-Ein kurzfristiges Kaufsignal entsteht nur, wenn:
+- ohne Position: **Kaufen** oder **Warten**,
+- mit Position und stabilem Trend: **Halten**,
+- erneute Bestätigung oberhalb des Einstands: **Nachkaufen**,
+- kippender kurzfristiger Trend: **Verkaufen**,
+- unterhalb des Einstands: kein automatisches Verbilligen.
 
-- der 1-Minuten-Chart einen Ausbruch oder bestätigten Trend-Rücksetzer zeigt,
-- der 5-Minuten-Chart das Setup bestätigt,
-- der 15-Minuten-Trend nicht dagegenläuft,
-- Stunde und Tag keinen starken Gegentrend zeigen,
-- der RSI keinen überhitzten Einstieg signalisiert,
-- die jüngste abgeschlossene 1-Minuten-Kerze höchstens vier Minuten alt ist,
-- der deutsche Markt geöffnet ist.
+Aus Einstandskurs und Stückzahl berechnet der Chart außerdem den ungefähren laufenden Gewinn oder Verlust. Gebühren und der tatsächliche Ausführungskurs des Brokers sind darin nicht enthalten.
 
-Verwendet werden nur wenige nachvollziehbare Techniken: schnelle und langsame EMA, EMA 200 soweit genügend Historie vorliegt, RSI 14, MACD-Histogramm, ATR, 20-Kerzen-Ausbruch bzw. Rücksetzer und relatives Volumen.
+## Signallogik im Hintergrund
 
-Stunden-, Tages-, Wochen- und Monatschart verlängern den Trade nicht. Sie sind ausschließlich Trend- und Risikofilter. Das eigentliche Timing kommt aus 1, 5 und 15 Minuten.
+Obwohl nur ein Chart sichtbar ist, prüft die App weiterhin mehrere Zeitebenen:
 
-Bei einer gespeicherten Position gelten zusätzlich:
+- 1 Minute erzeugt den Auslöser,
+- 5 Minuten bestätigt den Auslöser,
+- 15 Minuten prüft den unmittelbaren Intraday-Trend,
+- Stunde und Tag verhindern einen Trade gegen einen starken Gegentrend,
+- Woche und Monat dienen nur als Risiko- und Kontextfilter.
 
-- **Nachkaufen** nur bei einem neuen bestätigten Signal und nur, wenn der aktuelle Kurs nicht unter dem Einstand liegt.
-- **Verkaufen** bei gemeinsam kippendem 1- und 5-Minuten-Trend.
-- ansonsten **Halten / Beobachten**.
+Verwendet werden EMA-Trend, RSI 14, MACD-Histogramm, ATR, 20-Kerzen-Struktur und relatives Volumen. Ein Kaufsignal benötigt kurzfristige Volumenbestätigung. Die längeren Ebenen verlängern den geplanten Trade nicht.
 
-## Livekurs, Chartdaten und Datenalter
+## Datenquellen
 
-Für den handelbaren aktuellen Kurs ruft die App das öffentliche Level-1-Snapshot von **Tradegate BSX** ab. Angezeigt werden:
+**Tradegate BSX** liefert den laufenden Level-1-Kurs sowie die heutigen tatsächlichen Umsätze. Daraus baut die App den sichtbaren Tageschart und die aktuellen 1-, 5- und 15-Minuten-Ebenen auf. Wenn am frühen Morgen noch nicht genügend heutige Kerzen existieren, bleibt die vorhandene deutsche Yahoo-Zeitebene vorübergehend als Kontext erhalten.
 
-- Geldkurs: ungefähr der Preis, zu dem eine Position sofort verkauft werden könnte,
-- Briefkurs: ungefähr der Preis, zu dem sofort gekauft werden könnte,
-- letzter tatsächlich ausgeführter Umsatz,
-- Geld-/Brief-Stückzahlen und der aktuelle Spread.
+**yfinance** liefert die längeren deutschen Kontextreihen für Stunde, Tag, Woche und Monat. Diese Ebenen werden nicht mehr einzeln angezeigt.
 
-Dieser Bereich aktualisiert sich bei geöffneter App automatisch alle zehn Sekunden. Wenn Tradegate vorübergehend nicht erreichbar ist, bleibt die letzte abgeschlossene Chartkerze als klar bezeichneter Fallback sichtbar. Ein alter letzter Umsatz ist nicht automatisch ein alter Markt: Geld und Brief können sich weiter verändern, auch wenn zwischenzeitlich kein Handel zustande kommt.
+Ein alter letzter Umsatz ist nicht automatisch ein alter Markt: Geld und Brief können sich ändern, obwohl in einer Minute kein Handel zustande kommt. Deshalb zeigt der Chart den laufenden Geld-/Briefmittelpunkt separat. Ein Kaufsignal verlangt trotzdem echte kurzfristige Handelsaktivität.
 
-Die technischen Chartkerzen stammen weiterhin aus yfinance. Livekurs und technische Chartbasis werden bewusst getrennt beschriftet. Ein frischer Tradegate-Geld-/Briefkurs macht eine veraltete Minutenkerze nicht zu einer aktuellen Indikatorberechnung.
-
-Die App vergleicht kostenlose yfinance-Daten für Stuttgart (`RQ0.SG`) und Frankfurt (`RQ0.F`). Sie verwendet vollständig den deutschen Platz mit der frischeren 1-Minuten-Reihe und zeigt den gewählten Platz offen an. Zeitebenen verschiedener Plätze werden nicht gemischt; ein Wechsel auf den US-Ticker erfolgt nicht.
-
-Bei einem wenig gehandelten deutschen Instrument kann der letzte Umsatz deutlich zurückliegen. Für einen 5–30-Minuten-Trade wäre ein solcher Preis ungeeignet. Deshalb zeigt die App in diesem Fall ausdrücklich **„Kein Signal – Kurs ist zu stark verzögert“**. Die technische Punktzahl bleibt sichtbar, wird aber nicht als Handlung freigegeben.
-
-Kostenlose Daten können verzögert, lückenhaft oder unvollständig sein. Tradegate ist ein anderer Handelsplatz als Stuttgart oder Frankfurt; deshalb kann der dortige Kurs vom Kurs im eigenen Broker abweichen. Für eine tatsächliche kurzfristige Ausführung müssen Geld, Brief, Handelsplatz und Spread im eigenen Broker geprüft werden.
-
-## Chartansichten
-
-Der Nutzer kann zwischen folgenden Ansichten wechseln:
-
-- 1 Minute
-- 5 Minuten
-- 15 Minuten
-- 1 Stunde
-- Tageschart
-- Wochenchart
-- Monatschart
-
-Jeder Chart enthält Candlesticks, die für diese Zeitebene passenden EMA-Linien, Volumen, RSI sowie einen direkt am aktuellen Kurs angezeigten Trendhinweis. Einstiegszone, Stop und Ziel werden nur angezeigt, wenn sie für das aktuelle Signal berechnet werden können.
+Tradegate kann vom Handelsplatz des eigenen Brokers abweichen. Vor einer tatsächlichen Ausführung müssen Geld, Brief, Spread und Handelsplatz im Broker geprüft werden.
 
 ## Installation und Start
-
-Voraussetzungen: Python 3.11 oder neuer und Git.
 
 ```bash
 git clone https://github.com/Scorpion191180/trading-Signal-bot.git
@@ -94,7 +68,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der vorhandenen lokalen SQLite-Datenbank gespeichert. Es werden keine Broker-Zugangsdaten benötigt oder gespeichert.
+Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der lokalen SQLite-Datenbank gespeichert. Broker-Zugangsdaten werden nicht benötigt oder gespeichert.
 
 ## Tests
 
@@ -103,18 +77,4 @@ Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der vorhande
 .venv/bin/pytest -q -W error
 ```
 
-Die Tests prüfen unter anderem:
-
-- nachvollziehbare Indikatoren und Signalpunkte,
-- bestätigtes Kaufen auf 1/5/15 Minuten,
-- Verkauf bei gemeinsamem kurzfristigem Trendbruch,
-- Nachkaufsperre unterhalb des Einstands,
-- vollständige Sperre bei veralteten 1-Minuten-Daten,
-- robustes Einlesen und Plausibilisieren des Tradegate-Geld-/Briefkurses,
-- Auswahl des frischeren deutschen Handelsplatzes ohne Symbolmischung,
-- Wochen-/Monatsverdichtung nur aus abgeschlossenen Quellkerzen,
-- weiterhin die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.
-
-## Wichtige Grenze
-
-Charttechnik kann Wahrscheinlichkeiten strukturieren, aber keine erfolgreiche Vorhersage garantieren. Besonders bei D-Wave können geringe Liquidität am deutschen Platz, große Spreads, Nachrichten und Bewegungen des US-Primärmarkts ein technisches Setup innerhalb weniger Sekunden ungültig machen. Die App nennt die technische Handlung deshalb ein **Signal**, nicht eine sichere Kauf- oder Verkaufsempfehlung.
+Die Tests prüfen unter anderem den Tradegate-Geld-/Briefkurs, das Einlesen der Tagesumsätze ohne doppelte Auftragszeilen, lückenlose Ein-Minuten-Kerzen, den Livekurs im Positionssignal, Kaufen/Verkaufen/Nachkaufen, die Nachkaufsperre unterhalb des Einstands sowie die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.

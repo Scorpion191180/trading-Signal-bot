@@ -229,7 +229,7 @@ def analyze_timeframes(
 
 def _is_german_market_open(now: datetime) -> bool:
     berlin = now.astimezone(ZoneInfo("Europe/Berlin"))
-    return berlin.weekday() < 5 and time(8, 0) <= berlin.time().replace(tzinfo=None) <= time(22, 0)
+    return berlin.weekday() < 5 and time(7, 30) <= berlin.time().replace(tzinfo=None) <= time(22, 0)
 
 
 def _signal_strength(score: float) -> str:
@@ -244,6 +244,7 @@ def build_intraday_signal(
     now: datetime | None = None,
     enforce_market_hours: bool = True,
     maximum_data_age_minutes: float = 4.0,
+    live_price: float | None = None,
 ) -> IntradaySignal:
     current_time = now or datetime.now(UTC)
     required = ("1m", "5m", "15m", "1h", "1d", "1wk", "1mo")
@@ -272,7 +273,7 @@ def build_intraday_signal(
     candle_end = minute.data_timestamp.astimezone(UTC) + timedelta(minutes=1)
     age_minutes = max((current_time.astimezone(UTC) - candle_end).total_seconds() / 60, 0.0)
     market_open = _is_german_market_open(current_time)
-    price = minute.price
+    price = live_price if live_price is not None and live_price > 0 else minute.price
     minute_data = enriched["1m"]
     latest = minute_data.iloc[-1]
     one_minute_atr = float(latest["atr_14"])

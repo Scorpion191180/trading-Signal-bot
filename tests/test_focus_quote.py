@@ -3,10 +3,16 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pandas as pd
 import pytest
 
 from src.data import ProviderError
-from src.focus.quote import TradegateQuoteProvider
+from src.focus.quote import (
+    TradegateQuoteProvider,
+    parse_tradegate_trades,
+    resample_intraday_candles,
+    tradegate_day_candles,
+)
 
 
 class FakeResponse:
@@ -75,3 +81,40 @@ def test_tradegate_quote_rejects_crossed_market():
     provider = _provider({"bid": 18.0, "ask": 17.9})
     with pytest.raises(ProviderError, match="unplausiblen Geld-/Briefkurs"):
         provider.quote("US26740W1099")
+
+
+def test_tradegate_trade_parser_ignores_allocation_rows_and_old_days():
+    html = """
+    <table>
+      <tr><th>Date</th><th>Time</th><th>Volume</th><th>Order Volume</th><th>Price</th></tr>
+      <tr><td>11/08/2026</td><td>21:59:00.000</td><td>50</td><td>&nbsp;</td><td>17.10</td></tr>
+      <tr><td>12/08/2026</td><td>07:30:05.100</td><td>1 200</td><td>&nbsp;</td><td>17.50</td></tr>
+      <tr class="alt"><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>1 200</td><td>17.50</td></tr>
+      <tr><td>12/08/2026</td><td>07:31:10.250</td><td>100</td><td>&nbsp;</td><td>17.55</td></tr>
+    </table>
+    """
+    trades = parse_tradegate_trades(html)
+
+    assert len(trades) == 2
+    assert list(trades["volume"]) == [1200.0, 100.0]
+    assert list(trades["price"]) == [17.5, 17.55]
+    assert trades.index.tz is not None
+    assert trades.index[0].tz_convert("Europe/Berlin").date().isoformat() == "2026-08-12"
+
+
+def test_tradegate_day_candles_fill_quiet_minutes_and_end_at_live_midpoint():
+    index = pd.DatetimeIndex(
+        ["2026-08-12 05:30:05+00:00", "2026-08-12 05:32:10+00:00"],
+        name="timestamp",
+    )
+    trades = pd.DataFrame({"price": [17.5, 17.55], "volume": [1200.0, 100.0]}, index=index)
+    quote = _provider({"bid": 17.58, "ask": 17.62, "last": 17.55}).quote("US26740W1099")
+
+    candles = tradegate_day_candles(trades, quote)
+    five_minutes = resample_intraday_candles(candles, 5)
+
+    assert candles.index[0] == pd.Timestamp("2026-08-12 05:30:00+00:00")
+    assert candles.index[-1] == pd.Timestamp("2026-08-12 17:15:00+00:00")
+    assert candles.loc[pd.Timestamp("2026-08-12 05:31:00+00:00"), "volume"] == 0
+    assert candles["close"].iloc[-1] == pytest.approx(17.6)
+    assert five_minutes["close"].iloc[-1] == pytest.approx(17.6)

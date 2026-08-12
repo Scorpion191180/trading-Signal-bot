@@ -98,6 +98,20 @@ def test_add_signal_does_not_average_down():
     assert "kein Nachkauf im Verlust" in signal.headline
 
 
+def test_live_tradegate_price_is_used_for_position_and_display():
+    now = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+    analyses, enriched, _ = analyze_timeframes(_frames(now))
+    signal = build_intraday_signal(
+        analyses,
+        enriched,
+        FocusPosition(invested=True, average_price=12.0, quantity=5),
+        now=now,
+        enforce_market_hours=False,
+        live_price=12.5,
+    )
+    assert signal.current_price == 12.5
+
+
 def test_buy_signal_requires_short_term_volume_confirmation():
     now = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
     frames = _frames(now)
