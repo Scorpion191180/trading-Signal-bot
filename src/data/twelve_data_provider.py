@@ -54,6 +54,10 @@ class TwelveDataMarketDataProvider:
             raise ProviderError("Twelve Data liefert keine Zeitstempel.")
         frame = frame.set_index("datetime")
         normalized = normalize_ohlcv(frame, request.symbol)
-        result = validate_history(completed_candles(normalized, request.interval))
+        result = validate_history(
+            completed_candles(normalized, request.interval),
+            minimum_rows=request.minimum_rows,
+            require_latest_volume=request.require_latest_volume,
+        )
         result.attrs["provider"] = self.name
         return result

@@ -43,7 +43,11 @@ class YFinanceMarketDataProvider:
                     timeout=15,
                 )
             normalized = normalize_ohlcv(frame, request.symbol.upper().strip())
-            result = validate_history(completed_candles(normalized, request.interval))
+            result = validate_history(
+                completed_candles(normalized, request.interval),
+                minimum_rows=request.minimum_rows,
+                require_latest_volume=request.require_latest_volume,
+            )
             result.attrs["provider"] = self.name
             return result
         except ProviderError:

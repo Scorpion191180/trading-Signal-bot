@@ -19,6 +19,8 @@ class MarketDataRequest:
     interval: str = "5m"
     period: str = "5d"
     prepost: bool = False
+    minimum_rows: int = 200
+    require_latest_volume: bool = True
 
 
 class MarketDataProvider(Protocol):
@@ -133,7 +135,12 @@ def completed_candles(
     return completed
 
 
-def validate_history(frame: pd.DataFrame, *, minimum_rows: int = 200) -> pd.DataFrame:
+def validate_history(
+    frame: pd.DataFrame,
+    *,
+    minimum_rows: int = 200,
+    require_latest_volume: bool = True,
+) -> pd.DataFrame:
     """Verwirft zu kurze oder offensichtlich unbrauchbare Reihen vor einem Fallback."""
 
     if len(frame) < minimum_rows:
@@ -142,6 +149,6 @@ def validate_history(frame: pd.DataFrame, *, minimum_rows: int = 200) -> pd.Data
         )
     if float(frame["close"].iloc[-1]) <= 0:
         raise ProviderError("Der jüngste Schlusskurs ist nicht plausibel.")
-    if float(frame["volume"].iloc[-1]) <= 0:
+    if require_latest_volume and float(frame["volume"].iloc[-1]) <= 0:
         raise ProviderError("Die jüngste Kerze enthält kein belastbares Volumen.")
     return frame
