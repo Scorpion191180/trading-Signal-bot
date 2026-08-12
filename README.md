@@ -15,7 +15,7 @@ Die App führt keine Order aus. Sie zeigt eine technische Einschätzung als **Ka
 
 Die bisherige Navigation mit Watchlist, drei Strategiedepots, Scanner, Journal und vielen Einzelseiten wurde aus der normalen Oberfläche entfernt. Sichtbar ist nur noch:
 
-1. der letzte deutsche D-Wave-Kurs,
+1. der laufende deutsche D-Wave-Geld-/Briefkurs von Tradegate,
 2. ein einziges aktuelles Signal,
 3. höchstens drei kurze Begründungen,
 4. gegebenenfalls Einstiegszone, technischer Stop und technisches Ziel,
@@ -47,13 +47,24 @@ Bei einer gespeicherten Position gelten zusätzlich:
 - **Verkaufen** bei gemeinsam kippendem 1- und 5-Minuten-Trend.
 - ansonsten **Halten / Beobachten**.
 
-## Deutsche Handelsplätze und Datenalter
+## Livekurs, Chartdaten und Datenalter
+
+Für den handelbaren aktuellen Kurs ruft die App das öffentliche Level-1-Snapshot von **Tradegate BSX** ab. Angezeigt werden:
+
+- Geldkurs: ungefähr der Preis, zu dem eine Position sofort verkauft werden könnte,
+- Briefkurs: ungefähr der Preis, zu dem sofort gekauft werden könnte,
+- letzter tatsächlich ausgeführter Umsatz,
+- Geld-/Brief-Stückzahlen und der aktuelle Spread.
+
+Dieser Bereich aktualisiert sich bei geöffneter App automatisch alle zehn Sekunden. Wenn Tradegate vorübergehend nicht erreichbar ist, bleibt die letzte abgeschlossene Chartkerze als klar bezeichneter Fallback sichtbar. Ein alter letzter Umsatz ist nicht automatisch ein alter Markt: Geld und Brief können sich weiter verändern, auch wenn zwischenzeitlich kein Handel zustande kommt.
+
+Die technischen Chartkerzen stammen weiterhin aus yfinance. Livekurs und technische Chartbasis werden bewusst getrennt beschriftet. Ein frischer Tradegate-Geld-/Briefkurs macht eine veraltete Minutenkerze nicht zu einer aktuellen Indikatorberechnung.
 
 Die App vergleicht kostenlose yfinance-Daten für Stuttgart (`RQ0.SG`) und Frankfurt (`RQ0.F`). Sie verwendet vollständig den deutschen Platz mit der frischeren 1-Minuten-Reihe und zeigt den gewählten Platz offen an. Zeitebenen verschiedener Plätze werden nicht gemischt; ein Wechsel auf den US-Ticker erfolgt nicht.
 
 Bei einem wenig gehandelten deutschen Instrument kann der letzte Umsatz deutlich zurückliegen. Für einen 5–30-Minuten-Trade wäre ein solcher Preis ungeeignet. Deshalb zeigt die App in diesem Fall ausdrücklich **„Kein Signal – Kurs ist zu stark verzögert“**. Die technische Punktzahl bleibt sichtbar, wird aber nicht als Handlung freigegeben.
 
-Kostenlose Daten können verzögert, lückenhaft oder unvollständig sein. Für eine tatsächliche kurzfristige Ausführung müssen zusätzlich der aktuelle Geld-/Briefkurs und der Spread beim eigenen Broker geprüft werden.
+Kostenlose Daten können verzögert, lückenhaft oder unvollständig sein. Tradegate ist ein anderer Handelsplatz als Stuttgart oder Frankfurt; deshalb kann der dortige Kurs vom Kurs im eigenen Broker abweichen. Für eine tatsächliche kurzfristige Ausführung müssen Geld, Brief, Handelsplatz und Spread im eigenen Broker geprüft werden.
 
 ## Chartansichten
 
@@ -99,6 +110,7 @@ Die Tests prüfen unter anderem:
 - Verkauf bei gemeinsamem kurzfristigem Trendbruch,
 - Nachkaufsperre unterhalb des Einstands,
 - vollständige Sperre bei veralteten 1-Minuten-Daten,
+- robustes Einlesen und Plausibilisieren des Tradegate-Geld-/Briefkurses,
 - Auswahl des frischeren deutschen Handelsplatzes ohne Symbolmischung,
 - Wochen-/Monatsverdichtung nur aus abgeschlossenen Quellkerzen,
 - weiterhin die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.

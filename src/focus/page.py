@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import streamlit as st
 
-from src.data import YFinanceMarketDataProvider
+from src.data import ProviderError, YFinanceMarketDataProvider
 from src.database import DataStore
 
 from .analysis import (
@@ -18,11 +18,17 @@ from .analysis import (
 )
 from .charts import focus_chart
 from .data import TimeframeBundle, load_dwave_timeframes
+from .quote import LiveQuote, TradegateQuoteProvider
 
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _cached_market_data() -> TimeframeBundle:
     return load_dwave_timeframes(YFinanceMarketDataProvider())
+
+
+@st.cache_data(ttl=8, show_spinner=False)
+def _cached_live_quote() -> LiveQuote:
+    return TradegateQuoteProvider().quote(DWAVE_INSTRUMENT.isin)
 
 
 def _money(value: float | None) -> str:
@@ -64,6 +70,37 @@ def _save_position(
 def _trend_badge(label: str, score: float, trend: str) -> None:
     icon = "↗" if trend == "Aufwärts" else "↘" if trend == "Abwärts" else "→"
     st.metric(label, f"{icon} {score:.0f}/100", trend)
+
+
+@st.fragment(run_every=10)
+def _live_quote_panel(fallback_price: float | None = None) -> None:
+    st.subheader("Livekurs für die Ausführung")
+    try:
+        quote = _cached_live_quote()
+    except ProviderError as exc:
+        st.warning(
+            "Tradegate ist gerade nicht erreichbar. "
+            f"Als Fallback bleibt die letzte Chartkerze sichtbar ({_money(fallback_price)})."
+        )
+        st.caption(f"Technischer Abruffehler: {exc}")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Kaufen · Brief", _money(quote.ask))
+    c2.metric("Verkaufen · Geld", _money(quote.bid))
+    c3.metric("Letzter Umsatz", _money(quote.last))
+    c4.metric("Spread", f"{_money(quote.spread)} · {quote.spread_percent:.2f} %")
+    sizes: list[str] = []
+    if quote.bid_size is not None:
+        sizes.append(f"Geld-Stückzahl {quote.bid_size:,.0f}".replace(",", "."))
+    if quote.ask_size is not None:
+        sizes.append(f"Brief-Stückzahl {quote.ask_size:,.0f}".replace(",", "."))
+    st.caption(
+        f"{quote.provider} · Abruf {quote.fetched_at:%H:%M:%S} UTC · automatische Aktualisierung alle 10 Sekunden"
+        + (" · " + " · ".join(sizes) if sizes else "")
+    )
+    if quote.spread_percent >= 0.8:
+        st.warning("Der aktuelle Spread ist für einen 5–30-Minuten-Trade groß. Nicht unlimitiert kaufen.")
 
 
 def focus_page(store: DataStore) -> None:
@@ -109,6 +146,7 @@ def focus_page(store: DataStore) -> None:
     )
     if st.button("Kurse jetzt aktualisieren", type="primary", width="stretch"):
         _cached_market_data.clear()
+        _cached_live_quote.clear()
 
     with st.spinner("Prüfe 1 Minute bis Monatschart …"):
         bundle = _cached_market_data()
@@ -117,17 +155,23 @@ def focus_page(store: DataStore) -> None:
     errors = {**bundle.errors, **analysis_errors}
     signal = build_intraday_signal(analyses, enriched, position)
 
+    _live_quote_panel(signal.current_price or None)
+    st.caption(
+        "Geld und Brief oben sind der laufende Tradegate-Markt. Die folgende Analyse basiert auf abgeschlossenen "
+        "Chartkerzen und bleibt bei alten Minutenkerzen vorsorglich gesperrt."
+    )
+
     day_frame = bundle.frames.get("1d")
     day_change = None
     if day_frame is not None and len(day_frame) >= 2:
         day_change = (float(day_frame["close"].iloc[-1]) / float(day_frame["close"].iloc[-2]) - 1) * 100
     c1, c2, c3 = st.columns(3)
-    c1.metric("Letzter Kurs", _money(signal.current_price))
+    c1.metric("Letzte 1-Min.-Kerze", _money(signal.current_price))
     c2.metric("Letzter Tag", f"{day_change:+.2f} %" if day_change is not None else "—")
     c3.metric("Signalstärke", f"{signal.score:.0f}/100", signal.strength)
     if position.invested and position.average_price:
         pnl_pct = (signal.current_price / position.average_price - 1) * 100
-        st.caption(f"Deine Position liegt auf Kursbasis bei **{pnl_pct:+.2f} %** vor Gebühren und Spread.")
+        st.caption(f"Deine Position liegt auf Basis der letzten Chartkerze bei **{pnl_pct:+.2f} %** vor Gebühren und Spread.")
 
     st.markdown(
         f"""
@@ -205,6 +249,7 @@ def focus_page(store: DataStore) -> None:
             for key, message in errors.items():
                 st.write(f"**{SPEC_BY_KEY.get(key).label if key in SPEC_BY_KEY else key}:** {message}")
     st.caption(
-        f"Quelle: {bundle.provider} · Auswertung {datetime.now(UTC):%d.%m.%Y %H:%M UTC} · "
+        f"Quellen: Tradegate BSX Level 1 (Livekurs) und {bundle.provider} (Chartkerzen) · "
+        f"Auswertung {datetime.now(UTC):%d.%m.%Y %H:%M UTC} · "
         "keine automatische Order und keine Anlageberatung. Bei verzögerten Daten wird kein Signal freigegeben."
     )
