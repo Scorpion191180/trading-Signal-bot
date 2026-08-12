@@ -26,8 +26,7 @@ def _cached_market_data() -> TimeframeBundle:
     return load_dwave_timeframes(YFinanceMarketDataProvider())
 
 
-@st.cache_data(ttl=8, show_spinner=False)
-def _cached_live_quote() -> LiveQuote:
+def _live_quote() -> LiveQuote:
     return TradegateQuoteProvider().quote(DWAVE_INSTRUMENT.isin)
 
 
@@ -76,7 +75,7 @@ def _trend_badge(label: str, score: float, trend: str) -> None:
 def _live_quote_panel(fallback_price: float | None = None) -> None:
     st.subheader("Livekurs für die Ausführung")
     try:
-        quote = _cached_live_quote()
+        quote = _live_quote()
     except ProviderError as exc:
         st.warning(
             "Tradegate ist gerade nicht erreichbar. "
@@ -146,7 +145,6 @@ def focus_page(store: DataStore) -> None:
     )
     if st.button("Kurse jetzt aktualisieren", type="primary", width="stretch"):
         _cached_market_data.clear()
-        _cached_live_quote.clear()
 
     with st.spinner("Prüfe 1 Minute bis Monatschart …"):
         bundle = _cached_market_data()
