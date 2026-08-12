@@ -118,3 +118,27 @@ def test_tradegate_day_candles_fill_quiet_minutes_and_end_at_live_midpoint():
     assert candles.loc[pd.Timestamp("2026-08-12 05:31:00+00:00"), "volume"] == 0
     assert candles["close"].iloc[-1] == pytest.approx(17.6)
     assert five_minutes["close"].iloc[-1] == pytest.approx(17.6)
+
+
+@pytest.mark.parametrize(
+    ("minutes", "expected_rows"),
+    [(1, 900), (5, 180), (15, 60), (30, 30), (60, 15), (120, 8), (300, 3)],
+)
+def test_visible_intervals_are_anchored_to_lang_schwarz_open(minutes, expected_rows):
+    index = pd.date_range("2026-08-12 05:30", periods=900, freq="1min", tz="UTC")
+    values = pd.Series(range(900), index=index, dtype=float)
+    frame = pd.DataFrame(
+        {
+            "open": values,
+            "high": values + 1,
+            "low": values - 1,
+            "close": values + 0.5,
+            "volume": 1.0,
+        },
+        index=index,
+    )
+
+    result = resample_intraday_candles(frame, minutes)
+
+    assert len(result) == expected_rows
+    assert result.index[0].tz_convert("Europe/Berlin").strftime("%H:%M") == "07:30"

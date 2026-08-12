@@ -12,7 +12,7 @@ Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktu
 
 ## Was im Chart sichtbar ist
 
-- alle heute bei Lang & Schwarz ausgeführten Umsätze als gut lesbare 5-Minuten-Candlesticks mit Körper und Dochten,
+- alle heute bei Lang & Schwarz ausgeführten Umsätze als auswählbare Candlesticks mit Körper und Dochten,
 - der laufende Mittelpunkt zwischen Geld- und Briefkurs,
 - der aktuelle Geld-/Briefbereich,
 - das aktuelle Signal direkt im Chart,
@@ -20,7 +20,11 @@ Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktu
 - Stop und technisches Ziel, wenn die aktuelle Handlung diese Marken benötigt,
 - Kaufen-, Nachkaufen- und Verkaufen-Markierungen, die während der geöffneten Sitzung tatsächlich erzeugt wurden.
 
-Die sichtbaren Kerzen werden aus echten Open-, High-, Low- und Close-Werten der jeweiligen fünf Minuten gebaut. Der Körper reicht von Eröffnung bis Schluss; die Dochte reichen bis zum höchsten und niedrigsten tatsächlich beobachteten Kurs. Eine Kerze kann deshalb bei einem echten Doji oder einem Intervall ohne zusätzliche Preisspanne naturgemäß sehr schmal sein.
+Das sichtbare Kerzenintervall kann direkt über dem Chart auf **1, 5, 15 oder 30 Minuten** sowie **1, 2 oder 5 Stunden** gestellt werden. Stundenkerzen beginnen passend zur L&S-Sitzung um 07:30 Uhr statt an einer willkürlichen vollen Uhrzeit. Die Auswahl verändert nur die Darstellung; die Signallogik prüft weiterhin unabhängig ihre festen Zeitebenen.
+
+Für Positionswert und Plus/Minus verwendet die App den **L&S-Geldkurs**, weil dieser für einen sofortigen Verkauf maßgeblich ist. Für einen Kauf ist dagegen der Briefkurs relevant. Beide Werte stehen getrennt im Chart; ihre Mitte dient nur als technische Orientierung.
+
+Die sichtbaren Kerzen werden aus echten Open-, High-, Low- und Close-Werten des gewählten Zeitraums gebaut. Der Körper reicht von Eröffnung bis Schluss; die Dochte reichen bis zum höchsten und niedrigsten tatsächlich beobachteten Kurs. Eine Kerze kann deshalb bei einem echten Doji oder einem Intervall ohne zusätzliche Preisspanne naturgemäß sehr schmal sein.
 
 Die komplette Anzeige und die Signallogik werden bei geöffneter App automatisch alle zehn Sekunden neu ausgeführt. Die primäre L&S-Sitzung läuft werktags von 07:30 bis 23:00 Uhr. Danach bleibt der letzte Handelstag sichtbar; über Nacht entstehen keine neuen Kurse.
 
@@ -34,7 +38,7 @@ Die Positionseingabe ist absichtlich zugeklappt. Sie beeinflusst die Handlung im
 - kippender kurzfristiger Trend: **Verkaufen**,
 - unterhalb des Einstands: kein automatisches Verbilligen.
 
-Aus Einstandskurs und Stückzahl berechnet der Chart außerdem den ungefähren laufenden Gewinn oder Verlust. Gebühren und der tatsächliche Ausführungskurs des Brokers sind darin nicht enthalten.
+Aus Einstandskurs und Stückzahl zeigt der Signalkasten außerdem jederzeit den investierten Betrag, den aktuellen Positionswert sowie den ungefähren laufenden Gewinn oder Verlust in Euro und Prozent. Gebühren und der tatsächliche Ausführungskurs des Brokers sind darin nicht enthalten.
 
 ## Signallogik im Hintergrund
 
@@ -81,4 +85,4 @@ Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der lokalen 
 .venv/bin/pytest -q -W error
 ```
 
-Die Tests prüfen unter anderem den L&S-Geld-/Briefkurs, die L&S-Abschlüsse ab 07:30 Uhr, den Tradegate-Fallback, lückenlose Ein-Minuten-Kerzen, die quellspezifischen Handelszeiten, den Livekurs im Positionssignal, Kaufen/Verkaufen/Nachkaufen, die Nachkaufsperre unterhalb des Einstands sowie die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.
+Die Tests prüfen unter anderem den L&S-Geld-/Briefkurs, die L&S-Abschlüsse ab 07:30 Uhr, den Tradegate-Fallback, die auswählbaren Minuten- und Stundenkerzen, die quellspezifischen Handelszeiten, den Livekurs im Positionssignal, Kaufen/Verkaufen/Nachkaufen, die Nachkaufsperre unterhalb des Einstands sowie die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.

@@ -9,6 +9,22 @@ from plotly.subplots import make_subplots
 from .analysis import SPEC_BY_KEY, FocusPosition, IntradaySignal, TimeframeAnalysis
 from .quote import LiveQuote, resample_intraday_candles
 
+CANDLE_INTERVAL_LABELS = {
+    1: "1 Minute",
+    5: "5 Minuten",
+    15: "15 Minuten",
+    30: "30 Minuten",
+    60: "1 Stunde",
+    120: "2 Stunden",
+    300: "5 Stunden",
+}
+
+
+def _candle_trace_label(minutes: int) -> str:
+    unit = "Minute" if minutes == 1 else "Minuten" if minutes < 60 else "Stunde" if minutes == 60 else "Stunden"
+    value = minutes if minutes < 60 else minutes // 60
+    return f"{value}-{unit}-Kerzen"
+
 
 def day_signal_chart(
     data: pd.DataFrame,
@@ -16,10 +32,14 @@ def day_signal_chart(
     signal: IntradaySignal,
     position: FocusPosition,
     signal_events: list[dict[str, object]],
+    candle_minutes: int = 5,
 ) -> go.Figure:
     """Ein einziger Tageschart mit Livekurs und den tatsächlich erzeugten Signalen."""
 
-    visible = resample_intraday_candles(data, 5)
+    if candle_minutes not in CANDLE_INTERVAL_LABELS:
+        raise ValueError("Das Kerzenintervall wird nicht unterstützt.")
+    candle_label = _candle_trace_label(candle_minutes)
+    visible = resample_intraday_candles(data, candle_minutes)
     visible = visible.loc[(visible["volume"] > 0) | (visible.index == visible.index[-1])].copy()
     visible.index = visible.index.tz_convert("Europe/Berlin")
     figure = go.Figure()
@@ -30,7 +50,7 @@ def day_signal_chart(
             high=visible["high"],
             low=visible["low"],
             close=visible["close"],
-            name="5-Minuten-Kerzen",
+            name=candle_label,
             increasing_line_color="#22c55e",
             decreasing_line_color="#ef4444",
             increasing_fillcolor="rgba(34,197,94,.72)",
@@ -46,8 +66,8 @@ def day_signal_chart(
             x=[current_x],
             y=[quote.midpoint],
             mode="markers+text",
-            name="Aktueller Kurs",
-            text=[f"  aktuell {quote.midpoint:.3f} €"],
+            name="Geld/Brief-Mitte",
+            text=[f"  Mitte {quote.midpoint:.3f} €"],
             textposition="middle right",
             marker={"size": 12, "color": signal.color, "line": {"width": 2, "color": "white"}},
         )
@@ -116,9 +136,14 @@ def day_signal_chart(
 
     position_text = ""
     if position.invested and position.average_price and position.quantity:
-        pnl_eur = (quote.midpoint - position.average_price) * position.quantity
-        pnl_pct = (quote.midpoint / position.average_price - 1) * 100
-        position_text = f"<br>Position: {pnl_eur:+.2f} € · {pnl_pct:+.2f} %"
+        invested_eur = position.average_price * position.quantity
+        current_value = quote.bid * position.quantity
+        pnl_eur = (quote.bid - position.average_price) * position.quantity
+        pnl_pct = (quote.bid / position.average_price - 1) * 100
+        position_text = (
+            f"<br>Investiert {invested_eur:.2f} € · Verkaufswert {current_value:.2f} €"
+            f"<br>Plus/Minus {pnl_eur:+.2f} € · {pnl_pct:+.2f} %"
+        )
     figure.add_annotation(
         xref="paper",
         yref="paper",
@@ -130,7 +155,8 @@ def day_signal_chart(
         showarrow=False,
         text=(
             f"<b>{signal.headline}</b><br>"
-            f"Kurs {quote.midpoint:.3f} € · Signalstärke {signal.score:.0f}/100{position_text}"
+            f"Geld {quote.bid:.3f} € · Brief {quote.ask:.3f} € · "
+            f"Signalstärke {signal.score:.0f}/100{position_text}"
         ),
         bgcolor="rgba(15,23,42,.88)",
         bordercolor=signal.color,
@@ -153,12 +179,12 @@ def day_signal_chart(
         height=720,
         margin={"l": 12, "r": 18, "t": 20, "b": 18},
         xaxis_rangeslider_visible=False,
-        xaxis={"title": "Heutiger Handel · echte 5-Minuten-Candlesticks", "tickformat": "%H:%M"},
+        xaxis={"title": f"Heutiger Handel · echte {candle_label}", "tickformat": "%H:%M"},
         yaxis={"title": "EUR", "side": "right", "fixedrange": False},
         hovermode="x unified",
         showlegend=True,
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.01, "x": 0.42},
-        uirevision="dwave-trading-day",
+        uirevision=f"dwave-trading-day-{candle_minutes}",
     )
     return figure
 

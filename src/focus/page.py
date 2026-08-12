@@ -12,7 +12,7 @@ from src.data import ProviderError, YFinanceMarketDataProvider
 from src.database import DataStore
 
 from .analysis import DWAVE_INSTRUMENT, FocusPosition, analyze_timeframes, build_intraday_signal
-from .charts import day_signal_chart
+from .charts import CANDLE_INTERVAL_LABELS, day_signal_chart
 from .data import TimeframeBundle, load_dwave_timeframes
 from .lang_schwarz import LangSchwarzQuoteProvider, LangSchwarzSnapshot
 from .quote import (
@@ -140,7 +140,7 @@ def _record_signal_event(action: str, price: float, timestamp: pd.Timestamp) -> 
 
 
 @st.fragment(run_every=10)
-def _automatic_day_chart(position: FocusPosition) -> None:
+def _automatic_day_chart(position: FocusPosition, candle_minutes: int) -> None:
     try:
         quote, trades, fallback_active = _live_market_data()
         candles = market_day_candles(trades, quote)
@@ -169,7 +169,7 @@ def _automatic_day_chart(position: FocusPosition) -> None:
     )
     events = _record_signal_event(signal.action, quote.midpoint, candles.index[-1])
     st.plotly_chart(
-        day_signal_chart(candles, quote, signal, position, events),
+        day_signal_chart(candles, quote, signal, position, events, candle_minutes),
         width="stretch",
         config={"displaylogo": False, "scrollZoom": True},
         key="dwave_live_day_chart",
@@ -185,5 +185,12 @@ def _automatic_day_chart(position: FocusPosition) -> None:
 def focus_page(store: DataStore) -> None:
     st.title("D-Wave Quantum · Heute")
     st.caption("RQ0 · Lang & Schwarz · Tageschart mit automatischem Kurzfrist-Signal")
+    candle_minutes = st.selectbox(
+        "Kerzenintervall",
+        options=list(CANDLE_INTERVAL_LABELS),
+        index=1,
+        format_func=CANDLE_INTERVAL_LABELS.get,
+        key="dwave_candle_interval",
+    )
     position = _position_control(store)
-    _automatic_day_chart(position)
+    _automatic_day_chart(position, int(candle_minutes))

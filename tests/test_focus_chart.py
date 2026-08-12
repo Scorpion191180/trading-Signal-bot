@@ -70,8 +70,25 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     assert figure.data[0].low[0] < min(figure.data[0].open[0], figure.data[0].close[0])
     assert figure.data[0].whiskerwidth == 0.8
     assert any("HALTEN" in annotation.text for annotation in figure.layout.annotations)
-    assert figure.layout.uirevision == "dwave-trading-day"
+    assert figure.layout.uirevision == "dwave-trading-day-5"
     assert any("Einstand" in annotation.text for annotation in figure.layout.annotations)
+    assert any("Investiert 171.00 €" in annotation.text for annotation in figure.layout.annotations)
+    assert any("Verkaufswert 173.80 €" in annotation.text for annotation in figure.layout.annotations)
+    assert any("Plus/Minus +2.80 €" in annotation.text for annotation in figure.layout.annotations)
+    assert any("Geld 17.380 €" in annotation.text for annotation in figure.layout.annotations)
+    assert any("Brief 17.400 €" in annotation.text for annotation in figure.layout.annotations)
+
+    hour_figure = day_signal_chart(
+        candles,
+        quote,
+        signal,
+        FocusPosition(invested=True, average_price=17.1, quantity=10),
+        [],
+        candle_minutes=60,
+    )
+    assert hour_figure.data[0].name == "1-Stunde-Kerzen"
+    assert "1-Stunde-Kerzen" in hour_figure.layout.xaxis.title.text
+    assert hour_figure.layout.uirevision == "dwave-trading-day-60"
 
 
 def test_distant_entry_does_not_flatten_the_day_chart():

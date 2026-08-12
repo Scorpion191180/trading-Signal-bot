@@ -7,7 +7,7 @@ import re
 import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from html.parser import HTMLParser
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -164,9 +164,16 @@ def tradegate_day_candles(trades: pd.DataFrame, quote: LiveQuote) -> pd.DataFram
 
 
 def resample_intraday_candles(frame: pd.DataFrame, minutes: int) -> pd.DataFrame:
-    """Verdichtet Minutenkerzen einschließlich der laufenden Livekerze."""
+    """Verdichtet Minutenkerzen ab 07:30 Uhr einschließlich der laufenden Livekerze."""
 
-    grouped = frame.resample(f"{minutes}min", label="left", closed="left")
+    local_frame = frame.tz_convert("Europe/Berlin")
+    grouped = local_frame.resample(
+        f"{minutes}min",
+        label="left",
+        closed="left",
+        origin="start_day",
+        offset=timedelta(hours=7, minutes=30),
+    )
     result = grouped.agg(
         {
             "open": "first",
@@ -176,6 +183,7 @@ def resample_intraday_candles(frame: pd.DataFrame, minutes: int) -> pd.DataFrame
             "volume": "sum",
         }
     ).dropna(subset=["open", "high", "low", "close"])
+    result.index = result.index.tz_convert(frame.index.tz)
     result.attrs.update(frame.attrs)
     return result
 

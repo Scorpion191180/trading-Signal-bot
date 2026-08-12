@@ -1,6 +1,6 @@
 [project]
 name = "trading-signal-agent"
-version = "0.5.0"
+version = "0.5.1"
 description = "Kurzfristige Multi-Timeframe-Signale für D-Wave am deutschen Markt"
 requires-python = ">=3.11"
 
