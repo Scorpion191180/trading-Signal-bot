@@ -227,9 +227,9 @@ def analyze_timeframes(
     return analyses, enriched, errors
 
 
-def _is_german_market_open(now: datetime) -> bool:
+def _is_german_market_open(now: datetime, session_close: time) -> bool:
     berlin = now.astimezone(ZoneInfo("Europe/Berlin"))
-    return berlin.weekday() < 5 and time(7, 30) <= berlin.time().replace(tzinfo=None) <= time(22, 0)
+    return berlin.weekday() < 5 and time(7, 30) <= berlin.time().replace(tzinfo=None) <= session_close
 
 
 def _signal_strength(score: float) -> str:
@@ -245,6 +245,7 @@ def build_intraday_signal(
     enforce_market_hours: bool = True,
     maximum_data_age_minutes: float = 4.0,
     live_price: float | None = None,
+    session_close: time = time(23, 0),
 ) -> IntradaySignal:
     current_time = now or datetime.now(UTC)
     required = ("1m", "5m", "15m", "1h", "1d", "1wk", "1mo")
@@ -272,7 +273,7 @@ def build_intraday_signal(
     minute = analyses["1m"]
     candle_end = minute.data_timestamp.astimezone(UTC) + timedelta(minutes=1)
     age_minutes = max((current_time.astimezone(UTC) - candle_end).total_seconds() / 60, 0.0)
-    market_open = _is_german_market_open(current_time)
+    market_open = _is_german_market_open(current_time, session_close)
     price = live_price if live_price is not None and live_price > 0 else minute.price
     minute_data = enriched["1m"]
     latest = minute_data.iloc[-1]
@@ -305,7 +306,7 @@ def build_intraday_signal(
             None,
             None,
             "5–30 Minuten",
-            ("Kurzfristige Signale werden nur während der deutschen Handelszeit freigegeben.",),
+            ("Kurzfristige Signale werden nur während der Handelszeit der Kursquelle freigegeben.",),
             "Der nächste Kurs kann mit einer Lücke eröffnen; jetzt keine Handlung ableiten.",
             age_minutes,
             False,

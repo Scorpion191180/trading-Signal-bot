@@ -1,4 +1,4 @@
-"""Aktueller, handelbarer D-Wave-Kurs von Tradegate BSX."""
+"""Gemeinsame Livekursmodelle und die Tradegate-Ersatzquelle."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import re
 import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from html.parser import HTMLParser
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -37,6 +37,7 @@ class LiveQuote:
     volume: float | None
     fetched_at: datetime
     refresh_seconds: int
+    quoted_at: datetime | None = None
 
     @property
     def midpoint(self) -> float:
@@ -110,17 +111,23 @@ def parse_tradegate_trades(html: str) -> pd.DataFrame:
     return result
 
 
-def tradegate_day_candles(trades: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
-    """Baut lückenlose Ein-Minuten-Kerzen des letzten deutschen Handelstags."""
+def market_day_candles(trades: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
+    """Baut lückenlose Ein-Minuten-Kerzen des gelieferten deutschen Handelsplatzes."""
 
     if trades.empty:
-        raise ProviderError("Tradegate hat keine Tagesumsätze geliefert.")
+        raise ProviderError(f"{quote.venue} hat keine Tagesumsätze geliefert.")
     berlin = ZoneInfo("Europe/Berlin")
     local_index = trades.index.tz_convert(berlin)
     trading_date = local_index[-1].date()
-    quote_date = quote.fetched_at.astimezone(berlin).date()
+    quote_timestamp = quote.quoted_at or quote.fetched_at
+    quote_date = quote_timestamp.astimezone(berlin).date()
     last_trade_minute = trades.index[-1].floor("min")
-    quote_minute = pd.Timestamp(quote.fetched_at).floor("min")
+    quote_minute = pd.Timestamp(quote_timestamp).floor("min")
+    session_close = time(23, 0) if quote.venue == "Lang & Schwarz" else time(22, 0)
+    session_end = pd.Timestamp(
+        datetime.combine(trading_date, session_close, tzinfo=berlin).astimezone(UTC)
+    )
+    quote_minute = min(quote_minute, session_end)
     end = max(last_trade_minute, quote_minute) if quote_date == trading_date else last_trade_minute
 
     grouped = trades.resample("1min", label="left", closed="left")
@@ -145,13 +152,19 @@ def tradegate_day_candles(trades: pd.DataFrame, quote: LiveQuote) -> pd.DataFram
     candles.loc[last_index, "high"] = max(float(candles.loc[last_index, "high"]), live_price)
     candles.loc[last_index, "low"] = min(float(candles.loc[last_index, "low"]), live_price)
     candles.loc[last_index, "close"] = live_price
-    candles.attrs["provider"] = "Tradegate BSX Umsätze + Level 1"
+    candles.attrs["provider"] = f"{quote.venue} Abschlüsse + Livequote"
     candles.attrs["last_trade_timestamp"] = trades.index[-1].isoformat()
     return candles[["open", "high", "low", "close", "volume"]]
 
 
+def tradegate_day_candles(trades: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
+    """Kompatibilitätsname für bestehende Aufrufer und Tests."""
+
+    return market_day_candles(trades, quote)
+
+
 def resample_intraday_candles(frame: pd.DataFrame, minutes: int) -> pd.DataFrame:
-    """Verdichtet Tradegate-Minutenkerzen einschließlich der laufenden Livekerze."""
+    """Verdichtet Minutenkerzen einschließlich der laufenden Livekerze."""
 
     grouped = frame.resample(f"{minutes}min", label="left", closed="left")
     result = grouped.agg(

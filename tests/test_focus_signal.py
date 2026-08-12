@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import numpy as np
 import pandas as pd
@@ -157,6 +157,30 @@ def test_stale_free_data_never_releases_short_term_trade():
     )
     assert signal.action == "NO_SIGNAL"
     assert "verzögert" in signal.headline
+
+
+def test_lang_schwarz_session_remains_open_until_23_but_tradegate_does_not():
+    now = datetime(2026, 8, 12, 20, 30, tzinfo=UTC)
+    analyses, enriched, _ = analyze_timeframes(_frames(now))
+
+    lang_schwarz = build_intraday_signal(
+        analyses,
+        enriched,
+        FocusPosition(),
+        now=now,
+        session_close=time(23, 0),
+    )
+    tradegate = build_intraday_signal(
+        analyses,
+        enriched,
+        FocusPosition(),
+        now=now,
+        session_close=time(22, 0),
+    )
+
+    assert lang_schwarz.market_open is True
+    assert tradegate.market_open is False
+    assert "geschlossen" in tradegate.headline
 
 
 def test_resampling_uses_complete_source_groups_only():
