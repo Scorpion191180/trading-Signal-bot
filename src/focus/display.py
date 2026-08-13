@@ -9,10 +9,23 @@ import pandas as pd
 from .data import resample_ohlcv
 from .quote import resample_intraday_candles
 
-PERIOD_OPTIONS = ("Max", "Intraday", "1W", "1M", "3M", "6M", "1J", "3J", "5J", "10J", "YTD")
+PERIOD_OPTIONS = ("Intraday", "1W", "1M", "3M", "6M", "YTD", "1J", "3J", "5J", "10J", "Max")
+PERIOD_LABELS = {
+    "Intraday": "Heute",
+    "1W": "1 Woche",
+    "1M": "1 Monat",
+    "3M": "3 Monate",
+    "6M": "6 Monate",
+    "YTD": "Seit Jahresanfang",
+    "1J": "1 Jahr",
+    "3J": "3 Jahre",
+    "5J": "5 Jahre",
+    "10J": "10 Jahre",
+    "Max": "Gesamte Historie",
+}
 PERIOD_INTERVALS = {
     "Intraday": (1, 5, 15, 30, 60, 120, 300),
-    "1W": (1, 5, 15, 30, 60, 1440),
+    "1W": (5, 15, 30, 60, 1440),
     "1M": (5, 15, 30, 60, 1440),
     "3M": (60, 1440),
     "6M": (60, 1440),
@@ -37,7 +50,7 @@ DISPLAY_INTERVAL_LABELS = {
 }
 DEFAULT_INTERVAL = {
     "Intraday": 5,
-    "1W": 15,
+    "1W": 30,
     "1M": 60,
     "3M": 1440,
     "6M": 1440,

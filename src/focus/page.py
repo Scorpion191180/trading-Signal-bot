@@ -20,6 +20,7 @@ from .display import (
     DEFAULT_INTERVAL,
     DISPLAY_INTERVAL_LABELS,
     PERIOD_INTERVALS,
+    PERIOD_LABELS,
     PERIOD_OPTIONS,
     select_display_candles,
 )
@@ -30,6 +31,7 @@ from .quote import (
     market_day_candles,
     resample_intraday_candles,
 )
+from .stock3 import Stock3LangSchwarzProvider
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -46,6 +48,18 @@ def _cached_lang_schwarz_snapshot() -> tuple[dict[str, object], pd.DataFrame]:
 
     snapshot = LangSchwarzQuoteProvider().snapshot(DWAVE_INSTRUMENT.isin)
     return asdict(snapshot.quote), snapshot.trades
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_stock3_quote() -> dict[str, object]:
+    """Liefert den L&S-Bid-Kurs des frei sichtbaren stock3-D-Wave-Charts."""
+
+    return asdict(Stock3LangSchwarzProvider().quote())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_stock3_history(resolution_seconds: int) -> pd.DataFrame:
+    return Stock3LangSchwarzProvider().history(resolution_seconds)
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -93,24 +107,68 @@ def _cached_market_strip() -> list[tuple[str, float, float]]:
         return []
 
 
-def _live_market_data() -> tuple[LiveQuote, pd.DataFrame, bool]:
-    """Verwendet L&S primär und fällt nur bei einem echten Abruffehler auf Tradegate zurück."""
+def _latest_trading_day(frame: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
+    """Schneidet die Historie auf den Handelstag der laufenden L&S-Quotation zu."""
+
+    local_index = frame.index.tz_convert("Europe/Berlin")
+    quote_date = (quote.quoted_at or quote.fetched_at).astimezone(ZoneInfo("Europe/Berlin")).date()
+    selected = frame.loc[local_index.date == quote_date].copy()
+    if selected.empty:
+        latest_date = local_index[-1].date()
+        selected = frame.loc[local_index.date == latest_date].copy()
+    selected.attrs.update(frame.attrs)
+    return selected
+
+
+def _live_market_data() -> tuple[LiveQuote, pd.DataFrame, bool, str]:
+    """Verwendet L&S-Bid primär und fällt gestuft auf Abschlussquellen zurück."""
+
+    try:
+        quote = LiveQuote(**_cached_stock3_quote())
+        candles = _latest_trading_day(_cached_stock3_history(60), quote)
+        if len(candles) < 30:
+            raise ProviderError("Die öffentliche L&S-Bid-Historie enthält zu wenige Tageskerzen.")
+        return quote, candles, False, "stock3 · L&S Bid"
+    except ProviderError as stock3_error:
+        stock3_error_message = str(stock3_error)
 
     try:
         quote_data, trades = _cached_lang_schwarz_snapshot()
-        return LiveQuote(**quote_data), trades, False
+        quote = LiveQuote(**quote_data)
+        return quote, market_day_candles(trades, quote), True, "L&S Abschlüsse"
     except ProviderError as primary_error:
         try:
             fallback = TradegateQuoteProvider()
-            return (
-                fallback.quote(DWAVE_INSTRUMENT.isin),
-                _cached_tradegate_day_trades(),
-                True,
-            )
+            quote = fallback.quote(DWAVE_INSTRUMENT.isin)
+            candles = market_day_candles(_cached_tradegate_day_trades(), quote)
+            return quote, candles, True, "Tradegate BSX Abschlüsse"
         except ProviderError as fallback_error:
             raise ProviderError(
-                f"Lang & Schwarz: {primary_error}; Tradegate: {fallback_error}"
+                f"stock3/L&S Bid: {stock3_error_message}; Lang & Schwarz: {primary_error}; "
+                f"Tradegate: {fallback_error}"
             ) from fallback_error
+
+
+def _stock3_context_frames(fallback_frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Ersetzt Yahoo-Zeitebenen, soweit echte historische L&S-Bid-Kerzen vorliegen."""
+
+    frames = dict(fallback_frames)
+    try:
+        five_minutes = _cached_stock3_history(300)
+    except ProviderError:
+        pass
+    else:
+        frames["5m"] = five_minutes
+        frames["15m"] = resample_intraday_candles(five_minutes, 15)
+    try:
+        frames["1h"] = _cached_stock3_history(3600)
+    except ProviderError:
+        pass
+    try:
+        frames["1d"] = _cached_stock3_history(86400)
+    except ProviderError:
+        pass
+    return frames
 
 
 def _stored_position(store: DataStore):
@@ -194,18 +252,23 @@ def _render_market_strip() -> None:
     st.markdown(f'<div class="market-strip">{"".join(cells)}</div>', unsafe_allow_html=True)
 
 
-def _render_instrument_header(store: DataStore, quote: LiveQuote, fallback_active: bool) -> FocusPosition:
+def _render_instrument_header(
+    store: DataStore,
+    quote: LiveQuote,
+    fallback_active: bool,
+    source_name: str,
+) -> FocusPosition:
     change = quote.change_percent or 0.0
     change_color = "#58c981" if change >= 0 else "#e06469"
-    source_badge = "Ersatzquelle" if fallback_active else "Hauptquelle"
+    source_badge = "Ersatzquelle" if fallback_active else "L&S Bid"
     header_column, position_column = st.columns([8.1, 1.9], vertical_alignment="center")
     header_column.markdown(
         '<div class="instrument-header">'
         '<div class="instrument-name">D-Wave Quantum <span>⌄</span></div>'
         f'<div class="venue-name">{quote.venue} <span>⌄</span><small>{source_badge}</small></div>'
-        f'<div class="live-price">{quote.midpoint:.3f} € '
+        f'<div class="live-price">{quote.bid:.3f} € '
         f'<span style="color:{change_color}">{change:+.2f} %</span>'
-        f'<small>Geld {quote.bid:.3f} · Brief {quote.ask:.3f}</small></div>'
+        f'<small>{source_name} · Brief {quote.ask:.3f}</small></div>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -227,8 +290,8 @@ def _signal_mode_text(position: FocusPosition, quote: LiveQuote) -> str:
 
     if not position.invested:
         return "Signalmodus · nicht investiert: Eine bestätigte Einstiegslage erscheint als KAUFEN."
-    if position.average_price is not None and quote.midpoint < position.average_price:
-        distance = (quote.midpoint / position.average_price - 1) * 100
+    if position.average_price is not None and quote.bid < position.average_price:
+        distance = (quote.bid / position.average_price - 1) * 100
         return (
             "Signalmodus · Position aktiv: Eine bestätigte Einstiegslage heißt NACHKAUFEN. "
             f"Aktuell {distance:.1f} % unter deinem Einstand – deshalb verhindert die Risikoregel ein Verbilligen."
@@ -277,7 +340,7 @@ def _update_forward_validation(
             symbol=DWAVE_INSTRUMENT.exchange_symbol,
             provider=quote.venue,
             forecast_at=quote.quoted_at or quote.fetched_at,
-            entry_price=quote.midpoint,
+            entry_price=quote.bid,
             bid=quote.bid,
             ask=quote.ask,
             direction=signal.forecast_direction,
@@ -315,23 +378,25 @@ def _validation_text(metrics: dict[str, float | int | None]) -> str:
 @st.fragment(run_every=10)
 def _automatic_day_chart(store: DataStore) -> None:
     try:
-        quote, trades, fallback_active = _live_market_data()
-        candles = market_day_candles(trades, quote)
+        quote, candles, fallback_active, source_name = _live_market_data()
     except ProviderError:
         st.error("Der Live-Tageschart ist gerade nicht erreichbar. Die App versucht es in zehn Sekunden erneut.")
         return
 
     _render_market_strip()
-    position = _render_instrument_header(store, quote, fallback_active)
+    position = _render_instrument_header(store, quote, fallback_active, source_name)
     frames_data, errors, provider, symbol, venue = _cached_context_data()
     bundle = TimeframeBundle(frames_data, errors, provider, symbol, venue)
-    frames = dict(bundle.frames)
+    frames = _stock3_context_frames(bundle.frames)
     frames["1m"] = candles
     five_minutes = resample_intraday_candles(candles, 5)
     fifteen_minutes = resample_intraday_candles(candles, 15)
-    if len(five_minutes) >= 35:
+    if len(five_minutes) >= 35 and frames.get("5m", pd.DataFrame()).attrs.get("provider") != "stock3 · L&S Bid":
         frames["5m"] = five_minutes
-    if len(fifteen_minutes) >= 35:
+    if (
+        len(fifteen_minutes) >= 35
+        and frames.get("15m", pd.DataFrame()).attrs.get("provider") != "stock3 · L&S Bid"
+    ):
         frames["15m"] = fifteen_minutes
 
     analyses, enriched, _errors = analyze_timeframes(frames)
@@ -340,8 +405,8 @@ def _automatic_day_chart(store: DataStore) -> None:
         enriched,
         position,
         now=datetime.now(UTC),
-        live_price=quote.midpoint,
-        session_close=time(22, 0) if fallback_active else time(23, 0),
+        live_price=quote.bid,
+        session_close=time(23, 0) if quote.venue == "Lang & Schwarz" else time(22, 0),
         spread_percent=(quote.ask - quote.bid) / quote.midpoint * 100,
         order_imbalance=(quote.bid_size - quote.ask_size) / (quote.bid_size + quote.ask_size)
         if quote.bid_size is not None
@@ -349,113 +414,120 @@ def _automatic_day_chart(store: DataStore) -> None:
         and quote.bid_size + quote.ask_size > 0
         else None,
     )
-    events = _record_signal_event(signal.action, quote.midpoint, candles.index[-1])
+    events = _record_signal_event(signal.action, quote.bid, candles.index[-1])
     validation = _update_forward_validation(store, candles, quote, signal)
 
-    chart_holder = st.container()
-    range_holder = st.container()
     current_period = st.session_state.get("dwave_chart_period", "Intraday")
     if current_period not in PERIOD_OPTIONS:
         current_period = "Intraday"
-    with range_holder:
-        selected_period = st.segmented_control(
-            "Zeitraum",
-            options=PERIOD_OPTIONS,
-            default=current_period,
-            key="dwave_chart_period",
-            label_visibility="collapsed",
-            width="stretch",
-        )
+    selected_period = st.pills(
+        "Angezeigter Zeitraum der Aktie",
+        options=PERIOD_OPTIONS,
+        default=current_period,
+        format_func=PERIOD_LABELS.get,
+        key="dwave_chart_period",
+        help="Legt fest, ob der heutige Handelstag, eine Woche, ein Monat, ein Jahr oder die gesamte Historie sichtbar ist.",
+        width="stretch",
+    )
     period_label = str(selected_period or current_period)
 
-    with chart_holder:
-        style_column, interval_column, overlay_column = st.columns(
-            [1.3, 3.4, 4.7],
-            vertical_alignment="bottom",
-        )
-        with style_column:
-            chart_style = st.segmented_control(
-                "Darstellung",
-                options=("Kerzen", "Linie"),
-                default="Kerzen",
-                key="dwave_chart_style",
-                label_visibility="collapsed",
-                width="stretch",
-            )
-        interval_options = PERIOD_INTERVALS[period_label]
-        with interval_column:
-            candle_minutes = st.pills(
-                "Kerzenintervall",
-                options=interval_options,
-                default=DEFAULT_INTERVAL[period_label],
-                format_func=DISPLAY_INTERVAL_LABELS.get,
-                key=f"dwave_interval_{period_label}",
-                label_visibility="collapsed",
-                width="stretch",
-            )
-        with overlay_column:
-            overlays = st.pills(
-                "Werkzeuge",
-                options=("EMA", "Prognose", "Signale", "Position"),
-                selection_mode="multi",
-                default=("Prognose", "Signale", "Position"),
-                key="dwave_chart_overlays",
-                label_visibility="collapsed",
-                width="stretch",
-            )
-        selected_minutes = int(candle_minutes or DEFAULT_INTERVAL[period_label])
-        try:
-            display_candles = select_display_candles(
-                bundle.frames,
-                candles,
-                period=period_label,
-                interval_minutes=selected_minutes,
-            )
-        except ValueError as exc:
-            st.warning(f"{exc} Deshalb bleibt vorübergehend der heutige 5-Minuten-Chart sichtbar.")
-            period_label = "Intraday"
-            selected_minutes = 5
-            display_candles = resample_intraday_candles(candles, 5)
-
-        figure = day_signal_chart(
-            display_candles,
-            quote,
-            signal,
-            position,
-            events,
-            selected_minutes,
-            period_label=period_label,
-            data_is_resampled=True,
-            chart_style=str(chart_style or "Kerzen"),
-            overlays=set(overlays or ()),
-        )
-        st.plotly_chart(
-            figure,
+    style_column, interval_column, overlay_column = st.columns(
+        [1.3, 3.4, 4.7],
+        vertical_alignment="bottom",
+    )
+    with style_column:
+        chart_style = st.segmented_control(
+            "Darstellung",
+            options=("Kerzen", "Linie"),
+            default="Kerzen",
+            key="dwave_chart_style",
             width="stretch",
-            config={
-                "displaylogo": False,
-                "displayModeBar": True,
-                "scrollZoom": True,
-                "responsive": True,
-                "modeBarButtonsToAdd": [
-                    "drawline",
-                    "drawopenpath",
-                    "drawrect",
-                    "eraseshape",
-                    "toggleSpikelines",
-                ],
-                "toImageButtonOptions": {"format": "png", "filename": "D-Wave-Chart", "scale": 2},
-            },
-            key=f"dwave_professional_chart_{period_label}_{selected_minutes}_{chart_style}",
         )
-        quote_time = (quote.quoted_at or quote.fetched_at).astimezone(ZoneInfo("Europe/Berlin"))
-        source = f"{quote.venue} · Ersatzquelle" if fallback_active else f"{quote.venue} · Hauptquelle"
-        st.caption(
-            f"{source} · Kurszeit {quote_time:%H:%M:%S} · automatisch alle 10 Sekunden · "
-            "Zeichnen, Zoom, Pan, Crosshair und PNG-Export über die Chartleiste · keine automatische Order"
+    interval_options = PERIOD_INTERVALS[period_label]
+    with interval_column:
+        candle_minutes = st.pills(
+            "Eine Kerze entspricht",
+            options=interval_options,
+            default=DEFAULT_INTERVAL[period_label],
+            format_func=DISPLAY_INTERVAL_LABELS.get,
+            key=f"dwave_interval_{period_label}",
+            help="Größere Kerzen fassen mehrere kleinere Kerzen zusammen. Deshalb sinkt ihre Anzahl.",
+            width="stretch",
         )
-        st.caption(_signal_mode_text(position, quote))
-        st.caption(_validation_text(validation))
+    with overlay_column:
+        overlays = st.pills(
+            "Einblendungen",
+            options=("EMA", "Prognose", "Signale", "Position"),
+            selection_mode="multi",
+            default=("Prognose", "Signale", "Position"),
+            key="dwave_chart_overlays",
+            width="stretch",
+        )
+    selected_minutes = int(candle_minutes or DEFAULT_INTERVAL[period_label])
+    try:
+        display_candles = select_display_candles(
+            frames,
+            candles,
+            period=period_label,
+            interval_minutes=selected_minutes,
+        )
+    except ValueError as exc:
+        st.warning(f"{exc} Deshalb bleibt vorübergehend der heutige 5-Minuten-Chart sichtbar.")
+        period_label = "Intraday"
+        selected_minutes = 5
+        display_candles = resample_intraday_candles(candles, 5)
+
+    period_text = PERIOD_LABELS[period_label]
+    candle_text = DISPLAY_INTERVAL_LABELS[selected_minutes]
+    st.markdown(
+        '<div class="chart-selection-summary">'
+        f'<b>Ansicht: {period_text}</b><span>Jede Kerze: {candle_text}</span>'
+        f'<span>{len(display_candles)} Kerzen</span>'
+        '<small>Größere Kerzen bündeln mehrere kleinere Kursabschnitte.</small>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    figure = day_signal_chart(
+        display_candles,
+        quote,
+        signal,
+        position,
+        events,
+        selected_minutes,
+        period_label=period_label,
+        data_is_resampled=True,
+        chart_style=str(chart_style or "Kerzen"),
+        overlays=set(overlays or ()),
+    )
+    st.plotly_chart(
+        figure,
+        width="stretch",
+        config={
+            "displaylogo": False,
+            "displayModeBar": True,
+            "scrollZoom": True,
+            "responsive": True,
+            "modeBarButtonsToAdd": [
+                "drawline",
+                "drawopenpath",
+                "drawrect",
+                "eraseshape",
+                "toggleSpikelines",
+            ],
+            "toImageButtonOptions": {"format": "png", "filename": "D-Wave-Chart", "scale": 2},
+        },
+        key=f"dwave_professional_chart_{period_label}_{selected_minutes}_{chart_style}",
+    )
+    quote_time = (quote.quoted_at or quote.fetched_at).astimezone(ZoneInfo("Europe/Berlin"))
+    chart_source = str(display_candles.attrs.get("provider") or source_name)
+    source_text = source_name if chart_source == source_name else f"Kurs: {source_name} · Chart: {chart_source}"
+    st.caption(
+        f"{source_text}{' · Ersatzquelle' if fallback_active else ' · Hauptquelle'} · "
+        f"Kurszeit {quote_time:%H:%M:%S} · automatisch alle 10 Sekunden · "
+        "Zeichnen, Zoom, Pan, Crosshair und PNG-Export über die Chartleiste · keine automatische Order"
+    )
+    st.caption(_signal_mode_text(position, quote))
+    st.caption(_validation_text(validation))
 
 
 def focus_page(store: DataStore) -> None:

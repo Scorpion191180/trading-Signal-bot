@@ -1,0 +1,223 @@
+"""Öffentliche L&S-Bid-Kurse des frei sichtbaren stock3-D-Wave-Charts."""
+
+from __future__ import annotations
+
+import json
+import ssl
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+import certifi
+import pandas as pd
+
+from src.data import ProviderError
+
+from .quote import LiveQuote
+
+STOCK3_INSTRUMENT_ID = 61824087
+LANG_SCHWARZ_EXCHANGE_ID = 22
+SUPPORTED_RESOLUTIONS = {60, 300, 1800, 3600, 86400}
+
+
+def _number(value: object, *, field: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ProviderError(f"stock3 liefert keinen gültigen Wert für {field}.") from exc
+    if not pd.notna(parsed):
+        raise ProviderError(f"stock3 liefert keinen gültigen Wert für {field}.")
+    return parsed
+
+
+def _timestamp(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ProviderError("stock3 liefert keinen gültigen L&S-Kurszeitpunkt.")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError as exc:
+        raise ProviderError("stock3 liefert keinen gültigen L&S-Kurszeitpunkt.") from exc
+
+
+def parse_stock3_quote(payload: dict[str, Any], *, fetched_at: datetime) -> LiveQuote:
+    """Liest ausschließlich die L&S-Quotation mit Börsen-ID 22."""
+
+    data = payload.get("data")
+    quotations = data.get("quotations") if isinstance(data, dict) else None
+    if not isinstance(quotations, list):
+        raise ProviderError("stock3 liefert keine lesbaren Handelsplätze.")
+    quotation = next(
+        (
+            item
+            for item in quotations
+            if isinstance(item, dict)
+            and isinstance(item.get("exchange"), dict)
+            and item["exchange"].get("id") == LANG_SCHWARZ_EXCHANGE_ID
+        ),
+        None,
+    )
+    if quotation is None:
+        raise ProviderError("stock3 liefert aktuell keinen L&S-Kurs für D-Wave.")
+    bid_data = quotation.get("bid")
+    ask_data = quotation.get("ask")
+    if not isinstance(bid_data, dict) or not isinstance(ask_data, dict):
+        raise ProviderError("stock3 liefert keinen vollständigen L&S-Geld-/Briefkurs.")
+    bid = _number(bid_data.get("value"), field="Geld")
+    ask = _number(ask_data.get("value"), field="Brief")
+    if bid <= 0 or ask < bid:
+        raise ProviderError("stock3 meldet einen unplausiblen L&S-Geld-/Briefkurs.")
+    previous_close = _number(bid_data.get("prevClose"), field="Vortag")
+    change_percent = (bid / previous_close - 1) * 100 if previous_close > 0 else None
+    return LiveQuote(
+        provider="stock3 öffentlicher L&S-Kurs",
+        venue="Lang & Schwarz",
+        isin="US26740W1099",
+        bid=bid,
+        ask=ask,
+        bid_size=None,
+        ask_size=None,
+        last=bid,
+        high=_number(bid_data.get("high"), field="Tageshoch"),
+        low=_number(bid_data.get("low"), field="Tagestief"),
+        change_percent=change_percent,
+        volume=None,
+        fetched_at=fetched_at.astimezone(UTC),
+        refresh_seconds=10,
+        quoted_at=_timestamp(bid_data.get("time")),
+    )
+
+
+def decode_stock3_candles(payload: dict[str, Any], resolution_seconds: int) -> pd.DataFrame:
+    """Dekodiert die öffentlich ausgelieferte, differenzkomprimierte L&S-Bid-Reihe."""
+
+    if resolution_seconds not in SUPPORTED_RESOLUTIONS:
+        raise ValueError("Diese stock3-Auflösung wird nicht unterstützt.")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ProviderError("stock3 liefert keine L&S-Chartdaten.")
+    exponent = int(_number(data.get("exponent"), field="Kursgenauigkeit"))
+    scale = 10**exponent
+    timestamp_ms = 0.0
+    previous_close_units = 0.0
+    records: list[tuple[pd.Timestamp, float, float, float, float, float]] = []
+    for block_name in ("data", "dataRT"):
+        block = payload.get(block_name)
+        if not isinstance(block, dict):
+            continue
+        arrays = [block.get(key) for key in ("ts", "o", "h", "c", "l")]
+        if not all(isinstance(values, list) for values in arrays):
+            continue
+        times, opens, highs, closes, lows = arrays
+        assert all(isinstance(values, list) for values in (times, opens, highs, closes, lows))
+        row_count = min(len(times), len(opens), len(highs), len(closes), len(lows))
+        for index in range(row_count):
+            time_delta = _number(times[index], field="Zeitdifferenz")
+            if time_delta <= 0:
+                continue
+            timestamp_ms += time_delta * resolution_seconds * 1000
+            previous_close_units += _number(opens[index], field="Eröffnung")
+            high_delta = _number(highs[index], field="Hoch")
+            close_delta = _number(closes[index], field="Schluss")
+            low_delta = _number(lows[index], field="Tief")
+            open_value = previous_close_units / scale
+            high_value = (previous_close_units + high_delta) / scale
+            low_value = (previous_close_units - low_delta) / scale
+            close_value = (previous_close_units + high_delta - close_delta) / scale
+            previous_close_units += high_delta - close_delta
+            records.append(
+                (
+                    pd.to_datetime(timestamp_ms, unit="ms", utc=True),
+                    open_value,
+                    high_value,
+                    low_value,
+                    close_value,
+                    0.0,
+                )
+            )
+    if not records:
+        raise ProviderError("stock3 liefert keine dekodierbaren L&S-Bid-Kerzen.")
+    frame = pd.DataFrame(
+        records,
+        columns=["timestamp", "open", "high", "low", "close", "volume"],
+    ).set_index("timestamp")
+    frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index, utc=True), name="timestamp")
+    frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+    if (
+        (frame["high"] < frame[["open", "close"]].max(axis=1)).any()
+        or (frame["low"] > frame[["open", "close"]].min(axis=1)).any()
+        or (frame[["open", "high", "low", "close"]] <= 0).any().any()
+    ):
+        raise ProviderError("stock3 liefert unplausible L&S-Bid-Kerzen.")
+    frame.attrs["provider"] = "stock3 · L&S Bid"
+    frame.attrs["quote_type"] = "bid"
+    return frame
+
+
+class Stock3LangSchwarzProvider:
+    """Ruft den ohne Anmeldung sichtbaren D-Wave-Chart von stock3 ab."""
+
+    quote_endpoint = f"https://api.stock3.com/instrument/{STOCK3_INSTRUMENT_ID}"
+    chart_endpoint = "https://charting.stock3.com/d/q"
+
+    def __init__(
+        self,
+        *,
+        opener: Callable[..., Any] = urlopen,
+        clock: Callable[[], datetime] | None = None,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> None:
+        self._opener = opener
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._ssl_context = ssl_context or ssl.create_default_context(cafile=certifi.where())
+
+    def _read_json(self, url: str, *, label: str) -> dict[str, Any]:
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Accept-Language": "de-DE,de;q=0.9",
+                "User-Agent": "DWave-Kurzfrist-Signal/0.9 (private market-data display)",
+            },
+        )
+        try:
+            with self._opener(request, timeout=20, context=self._ssl_context) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            raise ProviderError(f"{label} ist nicht erreichbar: {exc}") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProviderError(f"{label} liefert kein gültiges Datenformat.") from exc
+        if not isinstance(payload, dict):
+            raise ProviderError(f"{label} liefert kein gültiges Datenobjekt.")
+        return payload
+
+    def quote(self) -> LiveQuote:
+        select = (
+            "id,name,quotations[exchange[id,name],defaultQuoteType,"
+            "bid[value,time,prevClose,open,high,low,change],"
+            "ask[value,time,prevClose,open,high,low,change]]"
+        )
+        url = f"{self.quote_endpoint}?{urlencode({'client_id': 'stock3', 'select': select})}"
+        payload = self._read_json(url, label="Der öffentliche stock3-L&S-Kurs")
+        return parse_stock3_quote(payload, fetched_at=self._clock())
+
+    def history(self, resolution_seconds: int) -> pd.DataFrame:
+        if resolution_seconds not in SUPPORTED_RESOLUTIONS:
+            raise ValueError("Diese stock3-Auflösung wird nicht unterstützt.")
+        query = urlencode(
+            {
+                "iid": STOCK3_INSTRUMENT_ID,
+                "res": resolution_seconds,
+                "qs": "bid",
+                "eid": LANG_SCHWARZ_EXCHANGE_ID,
+                "client_id": "stock3",
+                "locale": "de",
+            }
+        )
+        payload = self._read_json(
+            f"{self.chart_endpoint}?{query}",
+            label="Die öffentliche stock3-L&S-Bid-Historie",
+        )
+        return decode_stock3_candles(payload, resolution_seconds)

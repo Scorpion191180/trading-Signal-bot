@@ -11,7 +11,7 @@ from src.database import DataStore, create_database, create_session_factory
 from src.focus.page import focus_page
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "0.8-professional-chart"
+SERVICE_SCHEMA_VERSION = "0.9-stock3-ls-bid-chart"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
@@ -43,6 +43,14 @@ st.markdown(
     .live-price span {font-size: .88rem; margin-left: .2rem;}
     .live-price small {display: block; color: #728087; font-size: .62rem; font-weight: 500;}
     [data-testid="stPlotlyChart"] {border-top: 1px solid #2a3438; border-bottom: 1px solid #2a3438;}
+    .chart-selection-summary {
+      display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin: .25rem 0 .15rem;
+      padding: .38rem .6rem; border: 1px solid #2b3539; background: #0f1619; color: #bcc8cc;
+      font-size: .72rem; border-radius: .35rem;
+    }
+    .chart-selection-summary b {color: #f1f5f6;}
+    .chart-selection-summary span {padding-left: 1rem; border-left: 1px solid #334046;}
+    .chart-selection-summary small {margin-left: auto; color: #718087;}
     [data-testid="stPills"] button, [data-testid="stSegmentedControl"] button {
       min-height: 1.9rem; border-radius: .38rem !important; font-size: .72rem;
     }
@@ -56,6 +64,7 @@ st.markdown(
       .instrument-header {gap: .7rem; flex-wrap: wrap;}
       .instrument-name {font-size: .95rem;}
       .live-price {font-size: .9rem;}
+      .chart-selection-summary small {margin-left: 0; width: 100%;}
       div[data-testid="stHorizontalBlock"] {gap: .4rem;}
     }
     </style>

@@ -69,6 +69,8 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     assert figure.data[0].high[0] > max(figure.data[0].open[0], figure.data[0].close[0])
     assert figure.data[0].low[0] < min(figure.data[0].open[0], figure.data[0].close[0])
     assert figure.data[0].whiskerwidth == 0.65
+    assert figure.data[1].name == "L&S Bid"
+    assert figure.data[1].y[0] == quote.bid
     assert any("HALTEN" in annotation.text for annotation in figure.layout.annotations)
     assert figure.layout.uirevision == "dwave-professional-Intraday-5-Kerzen"
     assert figure.layout.dragmode == "pan"
@@ -107,7 +109,8 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     )
     assert len(minute_figure.data[0].x) == 240
     assert minute_figure.data[1].name == "Minutenverlauf"
-    assert pd.Timestamp(minute_figure.layout.xaxis.range[0]) == quiet_minutes.index[0].tz_convert("Europe/Berlin")
+    assert minute_figure.layout.xaxis.range is None
+    assert minute_figure.layout.xaxis.rangebreaks
 
     line_figure = day_signal_chart(
         candles,

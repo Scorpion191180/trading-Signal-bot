@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -125,11 +123,11 @@ def day_signal_chart(
     figure.add_trace(
         go.Scatter(
             x=[current_x],
-            y=[quote.midpoint],
+            y=[quote.bid],
             mode="markers",
-            name="Geld/Brief-Mitte",
+            name="L&S Bid",
             marker={"size": 9, "color": signal.color, "line": {"width": 1.5, "color": "white"}},
-            hovertemplate=f"Mitte {quote.midpoint:.3f} €<extra></extra>",
+            hovertemplate=f"L&S Bid {quote.bid:.3f} €<extra></extra>",
         )
     )
     figure.add_hrect(
@@ -169,7 +167,7 @@ def day_signal_chart(
 
     day_low = float(visible["low"].min())
     day_high = float(visible["high"].max())
-    day_span = max(day_high - day_low, quote.midpoint * 0.01)
+    day_span = max(day_high - day_low, quote.bid * 0.01)
     entry_is_near_chart = (
         position.average_price is not None
         and day_low - day_span * 0.25 <= position.average_price <= day_high + day_span * 0.25
@@ -266,17 +264,23 @@ def day_signal_chart(
         xref="paper",
         yref="y",
         x=1.0,
-        y=quote.midpoint,
+        y=quote.bid,
         xanchor="left",
         showarrow=False,
-        text=f" {quote.midpoint:.3f} ",
+        text=f" {quote.bid:.3f} ",
         bgcolor=price_color,
         bordercolor=price_color,
         font={"size": 11, "color": "white"},
     )
     xaxis: dict[str, object] = {
         "title": "",
-        "tickformat": "%H:%M" if candle_minutes < 1440 else "%d.%m.%Y",
+        "tickformat": (
+            "%H:%M"
+            if period_label == "Intraday"
+            else "%d.%m<br>%H:%M"
+            if candle_minutes < 1440
+            else "%d.%m.%Y"
+        ),
         "showgrid": True,
         "gridcolor": "rgba(100,116,139,.20)",
         "showspikes": True,
@@ -285,15 +289,11 @@ def day_signal_chart(
         "spikecolor": "rgba(226,232,240,.75)",
         "spikethickness": 1,
     }
-    if period_label == "Intraday" and candle_minutes == 1 and len(visible) > 180:
-        active_minutes = visible.index[visible["volume"] > 0]
-        if len(active_minutes) >= 90:
-            range_start = active_minutes[-90]
-        elif len(active_minutes):
-            range_start = active_minutes[0]
-        else:
-            range_start = visible.index[-180]
-        xaxis["range"] = [range_start, visible.index[-1] + timedelta(minutes=3)]
+    if period_label in {"Intraday", "1W", "1M"} and candle_minutes < 1440:
+        xaxis["rangebreaks"] = [
+            {"bounds": [23, 7.5], "pattern": "hour"},
+            {"bounds": ["sat", "mon"]},
+        ]
     figure.update_layout(
         height=690,
         margin={"l": 10, "r": 54, "t": 10, "b": 12},

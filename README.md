@@ -12,21 +12,23 @@ Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktu
 
 ## Was im Chart sichtbar ist
 
-- alle heute bei Lang & Schwarz ausgeführten Umsätze als auswählbare Candlesticks mit Körper und Dochten,
-- der laufende Mittelpunkt zwischen Geld- und Briefkurs,
+- den heutigen L&S-Bid-Verlauf als auswählbare Candlesticks mit Körper und Dochten,
+- den laufenden L&S-Geldkurs sowie den getrennt ausgewiesenen Briefkurs,
 - der aktuelle Geld-/Briefbereich,
 - das aktuelle Signal direkt im Chart,
 - bei einer gespeicherten Position der Einstandskurs und der ungefähre Gewinn oder Verlust,
 - Stop und technisches Ziel, wenn die aktuelle Handlung diese Marken benötigt,
 - Kaufen-, Nachkaufen- und Verkaufen-Markierungen, die während der geöffneten Sitzung tatsächlich erzeugt wurden.
 
-Die Bedienung orientiert sich an der fotografierten professionellen Chartansicht: oben stehen Marktüberblick, Instrument, Handelsplatz und Livekurs; im Chart stehen OHLC-Werte und das aktuelle Kurzfristsignal; Kurs und Preisachse liegen rechts. Der Zeitraum kann unten zwischen **Intraday, 1 Woche, 1/3/6 Monaten, 1/3/5/10 Jahren, YTD und Max** gewechselt werden. Je nach Zeitraum bietet die App nur sinnvolle echte Kerzenebenen von **1 Minute bis 1 Monat** an. Sie erzeugt keine vermeintlichen Minutenkurse aus Tagesdaten.
+Die Bedienung orientiert sich an der fotografierten professionellen Chartansicht: oben stehen Marktüberblick, Instrument, Handelsplatz und Livekurs; im Chart stehen OHLC-Werte und das aktuelle Kurzfristsignal; Kurs und Preisachse liegen rechts. Oberhalb des Charts trennt die App nun eindeutig **Angezeigter Zeitraum der Aktie** von **Eine Kerze entspricht**. Der Zeitraum kann zwischen **Heute, 1 Woche, 1/3/6 Monaten, Seit Jahresanfang, 1/3/5/10 Jahren und der gesamten Historie** gewechselt werden. Je nach Zeitraum bietet die App nur sinnvolle echte Kerzenebenen von **1 Minute bis 1 Monat** an. Sie erzeugt keine vermeintlichen Minutenkurse aus Tagesdaten.
+
+Wird die Kerzengröße erhöht, sinkt bei unverändertem Zeitraum zwangsläufig die Anzahl der Kerzen: Eine Stundenkerze fasst bis zu 60 Minutenkerzen zusammen, eine Tageskerze den gesamten Börsentag und eine Wochenkerze mehrere Handelstage. Eine Statuszeile nennt deshalb stets den gewählten Zeitraum, die Größe jeder Kerze und die tatsächlich sichtbare Kerzenzahl.
 
 Über dem Chart lassen sich Kerzen- und Linienansicht sowie EMA 8/21, Prognosezone, Signale und Position einzeln ein- oder ausblenden. Die schwebende Plotly-Werkzeugleiste bietet Zoomen, Verschieben, Fadenkreuz, Linien/freie Pfade/Rechtecke zeichnen, Zeichnungen löschen, Achsen zurücksetzen, Vollbild über die Streamlit-Ansicht und PNG-Export. Mit Mausrad oder Trackpad wird gezoomt; bei aktiver Verschiebung lässt sich der Zeitraum horizontal bewegen. Zeichnungen sind Arbeitshilfen in der laufenden Browseransicht und keine gespeicherten Handelsregeln.
 
 Das Intraday-Kerzenintervall kann direkt über dem Chart auf **1, 5, 15 oder 30 Minuten** sowie **1, 2 oder 5 Stunden** gestellt werden. Stundenkerzen beginnen passend zur L&S-Sitzung um 07:30 Uhr statt an einer willkürlichen vollen Uhrzeit. Die Auswahl verändert nur die Darstellung; die Signallogik prüft weiterhin unabhängig ihre festen Zeitebenen.
 
-Die 1-Minuten-Ansicht startet bei höchstens den letzten 90 tatsächlich aktiven Handelsminuten; bei einem ruhigen Tag wird dadurch automatisch mehr vom Tag gezeigt. Ein dezenter Stufenverlauf verbindet die einzelnen Abschlüsse. Herauszoomen zeigt weiterhin den kompletten Handelstag. Minuten ohne eigenen L&S-Abschluss werden mit dem zuletzt gehandelten Kurs fortgeführt, damit die Zeitachse nicht aus großen Löchern besteht; das Volumen dieser Minuten bleibt null.
+Die 1-Minuten-Ansicht zeigt den kompletten gelieferten Handelstag ab 07:30 Uhr und zoomt nicht mehr automatisch auf einen kleinen Ausschnitt. Ein dezenter Verlauf verbindet die gelieferten L&S-Bid-Kerzen. Die Voreinstellung **Heute** bündelt diese Daten zu 5-Minuten-Kerzen; **1 Woche** verwendet 30-Minuten-Kerzen über die gesamte Handelswoche. Nächte und Wochenenden werden auf den feinen Ansichten ausgeblendet, damit zwischen zwei Sitzungen keine künstlich großen leeren Flächen entstehen.
 
 Für Positionswert und Plus/Minus verwendet die App den **L&S-Geldkurs**, weil dieser für einen sofortigen Verkauf maßgeblich ist. Für einen Kauf ist dagegen der Briefkurs relevant. Beide Werte stehen getrennt im Chart; ihre Mitte dient nur als technische Orientierung.
 
@@ -80,13 +82,15 @@ Methodisch berücksichtigt die Umsetzung sowohl die dokumentierte Trendfortsetzu
 
 ## Datenquellen
 
-**Lang & Schwarz** ist die Hauptquelle. Die App liest von der öffentlichen D-Wave-Instrumentseite den laufenden Geld-/Briefkurs, dessen Kurszeit sowie die heutigen tatsächlichen Abschlüsse. Daraus baut sie den sichtbaren Tageschart und die aktuellen 1-, 5- und 15-Minuten-Ebenen auf. Wenn am frühen Morgen noch nicht genügend heutige Kerzen existieren, bleibt die vorhandene deutsche Yahoo-Zeitebene vorübergehend als Kontext erhalten.
+**Lang & Schwarz Bid über stock3** ist die Hauptquelle. Die App liest aus dem frei sichtbaren [stock3-Chart für D-Wave Quantum](https://stock3.com/aktien/d-wave-quantum-61824087) den laufenden L&S-Geld-/Briefkurs und die dort öffentlich ausgelieferten L&S-Bid-Kerzen. Genau dadurch entsprechen **Heute / 5 Minuten** und **1 Woche / 30 Minuten** der Logik der gezeigten stock3-Vorlage: Es werden Quote-Kerzen angezeigt und nicht nur die deutlich selteneren tatsächlich ausgeführten Abschlüsse.
+
+Für die auswählbaren Ansichten bis etwa drei Jahre werden die verfügbaren L&S-Bid-Historien in 5 Minuten, 1 Stunde und 1 Tag verwendet und je nach Auswahl sauber zu 15/30 Minuten, Wochen oder Monaten verdichtet. Das öffentliche stock3-Format ist keine vertraglich garantierte API und kann sich ändern; deshalb prüft die App jede Antwort auf gültige Zeitstempel und plausible OHLC-Werte, bevor sie diese anzeigt.
 
 **Tradegate BSX** bleibt als automatische Ersatzquelle aktiv, falls Lang & Schwarz vorübergehend nicht erreichbar oder unvollständig ist. Die gerade verwendete Quelle steht jederzeit direkt unter dem Chart. Für Tradegate endet die Signalfreigabe bereits um 22:00 Uhr.
 
-**yfinance** liefert die deutschen historischen Reihen für die auswählbaren längeren Chartzeiträume sowie den übergeordneten Stunden-, Tages-, Wochen- und Monatskontext der Signallogik. Die App kennzeichnet L&S trotzdem eindeutig als Quelle des laufenden Kurses; historische Yahoo-Kerzen werden nicht als L&S-Ticks ausgegeben.
+**yfinance** bleibt als historische Kontext- und Reservequelle erhalten, falls eine benötigte öffentliche L&S-Historie zeitweise nicht abrufbar ist. Yahoo-Kerzen werden nicht als L&S-Bid-Daten ausgegeben.
 
-Ein alter letzter Umsatz ist nicht automatisch ein alter Markt: Geld und Brief können sich ändern, obwohl in einer Minute kein Handel zustande kommt. Deshalb zeigt der Chart den laufenden Geld-/Briefmittelpunkt separat. Ein Kaufsignal verlangt trotzdem echte kurzfristige Handelsaktivität.
+Ein alter letzter Umsatz ist nicht automatisch ein alter Markt: Geld und Brief können sich ändern, obwohl in einer Minute kein Handel zustande kommt. Deshalb basiert der Hauptchart nun auf den Veränderungen des L&S-Geldkurses. Der Briefkurs und der Spread bleiben als Kauf- und Liquiditätsprüfung getrennt erhalten.
 
 Auch Lang & Schwarz kann vom in Trade Republic angezeigten Bestpreis abweichen, weil Trade Republic je nach Ausführungsmodus mehrere Handelsplätze vergleichen kann. Vor einer tatsächlichen Ausführung müssen Geld, Brief, Spread und Handelsplatz im Broker geprüft werden.
 
@@ -111,4 +115,4 @@ Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der lokalen 
 .venv/bin/pytest -q -W error
 ```
 
-Die Tests prüfen unter anderem den L&S-Geld-/Briefkurs, die L&S-Abschlüsse ab 07:30 Uhr, den Tradegate-Fallback, die auswählbaren Minuten-, Stunden-, Tages-, Wochen- und Monatskerzen, die Zeitraumbegrenzung, die quellspezifischen Handelszeiten, den Livekurs im Positionssignal, Kaufen/Verkaufen/Nachkaufen, die Nachkaufsperre unterhalb des Einstands sowie die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.
+Die Tests prüfen unter anderem das Deltaformat der öffentlichen stock3-L&S-Bid-Kerzen, die Auswahl des richtigen L&S-Handelsplatzes, den Geld-/Briefkurs, die L&S-Abschlüsse ab 07:30 Uhr, den Tradegate-Fallback, die auswählbaren Minuten-, Stunden-, Tages-, Wochen- und Monatskerzen, die Zeitraumbegrenzung, die quellspezifischen Handelszeiten, den Livekurs im Positionssignal, Kaufen/Verkaufen/Nachkaufen, die Nachkaufsperre unterhalb des Einstands sowie die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.

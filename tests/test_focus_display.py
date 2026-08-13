@@ -5,7 +5,7 @@ from datetime import timedelta
 import pandas as pd
 import pytest
 
-from src.focus.display import select_display_candles
+from src.focus.display import PERIOD_LABELS, PERIOD_OPTIONS, select_display_candles
 
 
 def _candles(index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -50,3 +50,11 @@ def test_intraday_interval_and_invalid_period_interval():
     assert 35 <= len(five_minutes) <= 37
     with pytest.raises(ValueError, match="passt nicht"):
         select_display_candles({}, live, period="6M", interval_minutes=1)
+
+
+def test_period_labels_make_day_month_and_year_views_explicit():
+    assert PERIOD_OPTIONS[0] == "Intraday"
+    assert PERIOD_LABELS["Intraday"] == "Heute"
+    assert PERIOD_LABELS["1M"] == "1 Monat"
+    assert PERIOD_LABELS["1J"] == "1 Jahr"
+    assert PERIOD_LABELS["Max"] == "Gesamte Historie"
