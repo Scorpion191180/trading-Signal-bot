@@ -217,6 +217,35 @@ class DataStore:
         with self.sessions() as session:
             return list(session.scalars(select(VirtualPortfolio).order_by(VirtualPortfolio.name)))
 
+    def get_or_create_virtual_portfolio(
+        self,
+        *,
+        name: str,
+        strategy: str,
+        strategy_version: str,
+        initial_capital: float,
+    ) -> VirtualPortfolio:
+        """Erzeugt ein klar benanntes Papierkonto, ohne einen vorhandenen Verlauf zurückzusetzen."""
+
+        if initial_capital <= 0:
+            raise ValueError("Startkapital muss positiv sein.")
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("Das Papierkonto benötigt einen Namen.")
+        with self.sessions.begin() as session:
+            portfolio = session.scalar(select(VirtualPortfolio).where(VirtualPortfolio.name == normalized_name))
+            if portfolio is None:
+                portfolio = VirtualPortfolio(
+                    name=normalized_name,
+                    strategy=strategy,
+                    strategy_version=strategy_version,
+                    initial_capital=initial_capital,
+                    cash=initial_capital,
+                )
+                session.add(portfolio)
+                session.flush()
+            return portfolio
+
     def get_portfolio(self, portfolio_id: int) -> VirtualPortfolio:
         with self.sessions() as session:
             portfolio = session.get(VirtualPortfolio, portfolio_id)
@@ -302,6 +331,9 @@ class DataStore:
         news_factor: float = 0.5,
         news_ids: tuple[str, ...] = (),
         idempotency_key: str | None = None,
+        fee: float | None = None,
+        spread_pct: float | None = None,
+        slippage_pct: float | None = None,
     ) -> VirtualOrder:
         key = idempotency_key or str(uuid.uuid4())
         with self.sessions.begin() as session:
@@ -322,9 +354,9 @@ class DataStore:
                 "BUY",
                 market_price,
                 quantity,
-                fee=self.settings.order_fee,
-                spread_pct=self.settings.spread_pct,
-                slippage_pct=self.settings.slippage_pct,
+                fee=self.settings.order_fee if fee is None else fee,
+                spread_pct=self.settings.spread_pct if spread_pct is None else spread_pct,
+                slippage_pct=self.settings.slippage_pct if slippage_pct is None else slippage_pct,
             )
             total = quote.gross_value + quote.fees
             if total > portfolio.cash:
@@ -387,6 +419,9 @@ class DataStore:
         news_ids: tuple[str, ...] = (),
         quantity: float | None = None,
         idempotency_key: str | None = None,
+        fee: float | None = None,
+        spread_pct: float | None = None,
+        slippage_pct: float | None = None,
     ) -> VirtualOrder:
         key = idempotency_key or str(uuid.uuid4())
         with self.sessions.begin() as session:
@@ -409,9 +444,9 @@ class DataStore:
                 "SELL",
                 market_price,
                 sell_quantity,
-                fee=self.settings.order_fee,
-                spread_pct=self.settings.spread_pct,
-                slippage_pct=self.settings.slippage_pct,
+                fee=self.settings.order_fee if fee is None else fee,
+                spread_pct=self.settings.spread_pct if spread_pct is None else spread_pct,
+                slippage_pct=self.settings.slippage_pct if slippage_pct is None else slippage_pct,
             )
             entry_fee_share = position.entry_fees_remaining * (sell_quantity / position.quantity)
             proceeds = quote.gross_value - quote.fees

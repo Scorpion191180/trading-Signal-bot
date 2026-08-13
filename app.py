@@ -11,7 +11,7 @@ from src.database import DataStore, create_database, create_session_factory
 from src.focus.page import focus_page
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "0.9-stock3-ls-bid-chart"
+SERVICE_SCHEMA_VERSION = "1.0-paper-bot-costs"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
@@ -50,6 +50,14 @@ st.markdown(
     }
     .chart-selection-summary b {color: #f1f5f6;}
     .chart-selection-summary span {padding-left: .7rem; border-left: 1px solid #334046;}
+    .paper-account-bar {
+      display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; margin: .02rem 0 .12rem;
+      padding: .22rem .48rem; border: 1px solid #334147; border-radius: .28rem;
+      background: #10181b; color: #c3cdd1; font-size: .64rem;
+    }
+    .paper-account-bar b {color: #f1f5f6; letter-spacing: .025em;}
+    .paper-account-bar span {padding-left: .65rem; border-left: 1px solid #344147;}
+    .paper-account-bar small {margin-left: auto; color: #77878d; font-size: .59rem;}
     [data-testid="stButtonGroup"] button {
       min-height: 1.5rem !important; height: 1.5rem !important; border-radius: .28rem !important;
       padding: .05rem .32rem !important; font-size: .61rem !important; white-space: nowrap !important;
@@ -76,6 +84,7 @@ st.markdown(
       .instrument-header {gap: .7rem; flex-wrap: wrap;}
       .instrument-name {font-size: .95rem;}
       .live-price {font-size: .9rem;}
+      .paper-account-bar small {margin-left: 0; width: 100%;}
       div[data-testid="stHorizontalBlock"] {gap: .4rem;}
     }
     </style>

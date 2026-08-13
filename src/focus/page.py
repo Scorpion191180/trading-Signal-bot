@@ -13,7 +13,7 @@ import streamlit as st
 from src.data import ProviderError, YFinanceMarketDataProvider
 from src.database import DataStore
 
-from .analysis import DWAVE_INSTRUMENT, FocusPosition, IntradaySignal, analyze_timeframes, build_intraday_signal
+from .analysis import DWAVE_INSTRUMENT, FocusPosition, IntradaySignal, analyze_timeframes, build_market_signal
 from .charts import day_signal_chart
 from .data import TimeframeBundle, load_dwave_timeframes
 from .display import (
@@ -26,6 +26,7 @@ from .display import (
     select_display_candles,
 )
 from .lang_schwarz import LangSchwarzQuoteProvider
+from .paper import PaperAccount, paper_order_events, run_paper_account
 from .quote import (
     LiveQuote,
     TradegateQuoteProvider,
@@ -287,33 +288,52 @@ def _position_summary(position: FocusPosition, quote: LiveQuote) -> str:
 
 
 def _signal_mode_text(position: FocusPosition, quote: LiveQuote) -> str:
-    """Erklärt knapp, warum ein Kauf- oder Nachkaufsignal möglich ist."""
+    """Trennt das neutrale Marktsignal klar von der privaten Position."""
 
     if not position.invested:
-        return "Signalmodus · nicht investiert: Eine bestätigte Einstiegslage erscheint als KAUFEN."
-    if position.average_price is not None and quote.bid < position.average_price:
-        distance = (quote.bid / position.average_price - 1) * 100
-        return (
-            "Signalmodus · Position aktiv: Eine bestätigte Einstiegslage heißt NACHKAUFEN. "
-            f"Aktuell {distance:.1f} % unter deinem Einstand – deshalb verhindert die Risikoregel ein Verbilligen."
-        )
-    return "Signalmodus · Position aktiv: Eine bestätigte Einstiegslage erscheint als NACHKAUFEN statt KAUFEN."
+        return "KAUFEN/VERKAUFEN-Marktsignal und 2.000-€-Papierkonto laufen unabhängig von einer privaten Position."
+    distance = (
+        (quote.bid / position.average_price - 1) * 100
+        if position.average_price is not None and position.average_price > 0
+        else 0.0
+    )
+    return (
+        "KAUFEN/VERKAUFEN-Marktsignal unabhängig von deiner privaten Position · "
+        f"private Position aktuell {distance:+.1f} % zum Einstand"
+    )
 
 
-def _record_signal_event(action: str, price: float, timestamp: pd.Timestamp) -> list[dict[str, object]]:
-    events = st.session_state.setdefault("dwave_signal_events", [])
-    previous_action = st.session_state.get("dwave_previous_action")
-    if action in {"BUY", "ADD", "SELL"} and previous_action != action:
-        events.append({"action": action, "price": price, "timestamp": timestamp.isoformat()})
-    st.session_state["dwave_previous_action"] = action
-    trading_date = timestamp.tz_convert("Europe/Berlin").date()
-    current_events = [
-        event
-        for event in events[-50:]
-        if pd.Timestamp(event["timestamp"]).tz_convert("Europe/Berlin").date() == trading_date
-    ]
-    st.session_state["dwave_signal_events"] = current_events
-    return current_events
+def _render_paper_account(account: PaperAccount, quote: LiveQuote) -> None:
+    state_color = (
+        "#58c981"
+        if account.state == "INVESTIERT"
+        else "#f59e0b"
+        if "SPREAD" in account.state
+        else "#94a3b8"
+    )
+    result_color = "#58c981" if account.result_eur >= 0 else "#e06469"
+    spread_eur = quote.ask - quote.bid
+    position_text = (
+        f"{account.quantity:.3f} Stk. @ {account.average_price:.3f} €"
+        if account.average_price is not None
+        else "keine Bot-Position"
+    )
+    st.markdown(
+        '<div class="paper-account-bar">'
+        '<b>BOT-TEST · 2.000 €</b>'
+        f'<span style="color:{state_color}">{account.state}</span>'
+        f'<span>{position_text}</span>'
+        f'<span>Depot {account.equity:.2f} €</span>'
+        f'<span style="color:{result_color}">{account.result_eur:+.2f} € '
+        f'({account.result_percent:+.2f} %)</span>'
+        f'<small>TR-Standardorder-Modell: 1 € je Order · Spread {spread_eur:.3f} € '
+        f'({quote.spread_percent:.2f} %) · Ausführungspuffer 0,05 % · '
+        f'Kosten bisher {account.total_transaction_costs:.2f} € '
+        f'(Gebühr {account.total_fees:.2f} · Spread {account.total_spread_cost:.2f} · '
+        f'Puffer {account.total_slippage_cost:.2f}) · Steuern nicht enthalten</small>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _update_forward_validation(
@@ -401,10 +421,9 @@ def _automatic_day_chart(store: DataStore) -> None:
         frames["15m"] = fifteen_minutes
 
     analyses, enriched, _errors = analyze_timeframes(frames)
-    signal = build_intraday_signal(
+    signal = build_market_signal(
         analyses,
         enriched,
-        position,
         now=datetime.now(UTC),
         live_price=quote.bid,
         session_close=time(23, 0) if quote.venue == "Lang & Schwarz" else time(22, 0),
@@ -414,9 +433,14 @@ def _automatic_day_chart(store: DataStore) -> None:
         and quote.ask_size is not None
         and quote.bid_size + quote.ask_size > 0
         else None,
+        require_volume_confirmation=candles.attrs.get("quote_type") != "bid",
+        enforce_liquidity_filter=False,
     )
-    events = _record_signal_event(signal.action, quote.bid, candles.index[-1])
+    signal_time = quote.quoted_at or quote.fetched_at
+    paper_account = run_paper_account(store, quote, signal, signal_at=signal_time)
+    events = paper_order_events(store, paper_account.portfolio_id, candles.index[-1])
     validation = _update_forward_validation(store, candles, quote, signal)
+    _render_paper_account(paper_account, quote)
 
     current_period = st.session_state.get("dwave_chart_period", "Intraday")
     if current_period not in PERIOD_OPTIONS:

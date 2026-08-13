@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from src.data import MarketDataRequest
-from src.focus.analysis import FocusPosition, analyze_timeframes, build_intraday_signal
+from src.focus.analysis import FocusPosition, analyze_timeframes, build_intraday_signal, build_market_signal
 from src.focus.data import load_dwave_timeframes, resample_ohlcv
 
 FREQUENCIES = {
@@ -148,6 +148,58 @@ def test_buy_signal_requires_short_term_volume_confirmation():
     )
     assert signal.action == "WAIT"
     assert any("Volumen zu schwach" in reason for reason in signal.reasons)
+
+    quote_only_signal = build_market_signal(
+        analyses,
+        enriched,
+        now=now,
+        enforce_market_hours=False,
+        require_volume_confirmation=False,
+    )
+    assert quote_only_signal.action == "BUY"
+    assert any("L&S-Bid-Quelle ohne Volumen" in reason for reason in quote_only_signal.reasons)
+
+
+def test_market_signal_is_independent_of_private_position_and_can_sell():
+    now = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+    bullish_analyses, bullish_enriched, _ = analyze_timeframes(_frames(now))
+    bearish_analyses, bearish_enriched, _ = analyze_timeframes(_frames(now, bearish=True))
+
+    assert (
+        build_market_signal(
+            bullish_analyses,
+            bullish_enriched,
+            now=now,
+            enforce_market_hours=False,
+        ).action
+        == "BUY"
+    )
+    assert (
+        build_market_signal(
+            bearish_analyses,
+            bearish_enriched,
+            now=now,
+            enforce_market_hours=False,
+        ).action
+        == "SELL"
+    )
+
+
+def test_technical_buy_remains_visible_while_wide_spread_blocks_execution_layer():
+    now = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+    analyses, enriched, _ = analyze_timeframes(_frames(now))
+
+    signal = build_market_signal(
+        analyses,
+        enriched,
+        now=now,
+        enforce_market_hours=False,
+        spread_percent=1.2,
+        enforce_liquidity_filter=False,
+    )
+
+    assert signal.action == "BUY"
+    assert "Spread" in signal.warning
 
 
 def test_bearish_one_and_five_minute_confirmation_creates_sell_signal():

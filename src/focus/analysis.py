@@ -408,6 +408,8 @@ def build_intraday_signal(
     session_close: time = time(23, 0),
     spread_percent: float | None = None,
     order_imbalance: float | None = None,
+    require_volume_confirmation: bool = True,
+    enforce_liquidity_filter: bool = True,
 ) -> IntradaySignal:
     current_time = now or datetime.now(UTC)
     required = ("1m", "5m", "15m", "1h", "1d", "1wk", "1mo")
@@ -505,14 +507,16 @@ def build_intraday_signal(
             spread_percent,
         )
 
-    short_volume = max(
+    observed_short_volume = max(
         value
         for value in (
             analyses["1m"].relative_volume or 0.0,
             analyses["5m"].relative_volume or 0.0,
         )
     ) >= 0.8
-    liquidity_veto = spread_percent is not None and spread_percent > 0.6
+    short_volume = observed_short_volume or not require_volume_confirmation
+    wide_spread = spread_percent is not None and spread_percent > 0.6
+    liquidity_veto = wide_spread and enforce_liquidity_filter
     short_trigger = (
         analyses["1m"].score >= 62
         and analyses["5m"].score >= 62
@@ -529,7 +533,11 @@ def build_intraday_signal(
         f"Marktphase {forecast.regime}: " + " · ".join(forecast.votes),
         f"1 Minute {analyses['1m'].score:.0f} · 5 Minuten {analyses['5m'].score:.0f} · "
         f"15 Minuten {analyses['15m'].score:.0f}",
-        f"Volumen {'bestätigt' if short_volume else 'zu schwach'} · "
+        (
+            f"Volumen {'bestätigt' if observed_short_volume else 'zu schwach'} · "
+            if require_volume_confirmation
+            else "L&S-Bid-Quelle ohne Volumen · Preisbestätigung aktiv · "
+        )
         + (f"Spread {spread_percent:.2f} %" if spread_percent is not None else "Spread nicht verfügbar"),
     )
 
@@ -556,6 +564,8 @@ def build_intraday_signal(
     elif short_trigger and not context_veto and score >= 64:
         action, headline, color = "BUY", "KAUFEN – kurzfristiges technisches Signal", "#22c55e"
         warning = "Nur für etwa 5–30 Minuten; bei Unterschreiten des Stops ist das Setup ungültig."
+        if wide_spread:
+            warning = "Technisches Kaufsignal vorhanden; der aktuelle Spread ist für eine Ausführung zu teuer."
 
     return IntradaySignal(
         action=action,
@@ -580,3 +590,25 @@ def build_intraday_signal(
         strategy_votes=forecast.votes,
         spread_percent=spread_percent,
     )
+
+
+def build_market_signal(
+    analyses: dict[str, TimeframeAnalysis],
+    enriched: dict[str, pd.DataFrame],
+    **signal_options: object,
+) -> IntradaySignal:
+    """Liefert KAUFEN/VERKAUFEN unabhängig von einer privaten Depotposition."""
+
+    entry_signal = build_intraday_signal(
+        analyses,
+        enriched,
+        FocusPosition(),
+        **signal_options,
+    )
+    exit_signal = build_intraday_signal(
+        analyses,
+        enriched,
+        FocusPosition(invested=True, average_price=entry_signal.current_price, quantity=1.0),
+        **signal_options,
+    )
+    return exit_signal if exit_signal.action == "SELL" else entry_signal

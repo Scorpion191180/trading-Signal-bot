@@ -26,12 +26,12 @@ def _quote(price: float = 18.3) -> LiveQuote:
     )
 
 
-def test_signal_mode_explains_buy_and_add_modes():
+def test_signal_mode_is_independent_of_private_position():
     assert "KAUFEN" in _signal_mode_text(FocusPosition(), _quote())
 
     losing_position = FocusPosition(invested=True, average_price=21.96, quantity=67.5)
     explanation = _signal_mode_text(losing_position, _quote())
 
-    assert "NACHKAUFEN" in explanation
-    assert "unter deinem Einstand" in explanation
-    assert "Verbilligen" in explanation
+    assert "KAUFEN/VERKAUFEN" in explanation
+    assert "unabhängig" in explanation
+    assert "-16.7 %" in explanation

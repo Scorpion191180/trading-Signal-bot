@@ -8,7 +8,7 @@ Eine bewusst reduzierte Streamlit-App für genau ein Instrument:
 - ISIN **US26740W1099**
 - geplanter Trade-Horizont **5 bis 30 Minuten**
 
-Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktualisierten, professionellen Kurschart. Die App führt keine Order aus. Ihre technischen Signale sind keine Anlageberatung und keine Erfolgs- oder Gewinngarantie.
+Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktualisierten, professionellen Kurschart. Ein getrenntes Papierkonto testet die Signale mit 2.000 € Spielgeld; die App führt keine echte Order aus. Ihre technischen Signale sind keine Anlageberatung und keine Erfolgs- oder Gewinngarantie.
 
 ## Was im Chart sichtbar ist
 
@@ -18,7 +18,7 @@ Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktu
 - das aktuelle Signal direkt im Chart,
 - bei einer gespeicherten Position der Einstandskurs und der ungefähre Gewinn oder Verlust,
 - Stop und technisches Ziel, wenn die aktuelle Handlung diese Marken benötigt,
-- Kaufen-, Nachkaufen- und Verkaufen-Markierungen, die während der geöffneten Sitzung tatsächlich erzeugt wurden.
+- persistente Kaufen- und Verkaufen-Markierungen der tatsächlich vorwärts ausgeführten Papierorders.
 
 Die Bedienung orientiert sich an der fotografierten professionellen Chartansicht: oben stehen Marktüberblick, Instrument, Handelsplatz und Livekurs; im Chart stehen OHLC-Werte und das aktuelle Kurzfristsignal; Kurs und Preisachse liegen rechts. Eine schmale Leiste über dem Chart wechselt zwischen **Heute, 1 Woche, 1/3/6 Monaten, Seit Jahresanfang, 1/3/5/10 Jahren und der gesamten Historie**. Daneben wählt ein kompaktes Menü die Kerzengröße; Linienansicht und Einblendungen liegen platzsparend unter **Mehr**. Je nach Zeitraum bietet die App nur sinnvolle echte Kerzenebenen von **1 Minute bis 1 Monat** an. Sie erzeugt keine vermeintlichen Minutenkurse aus Tagesdaten.
 
@@ -36,19 +36,20 @@ Die sichtbaren Kerzen werden aus echten Open-, High-, Low- und Close-Werten des 
 
 Die komplette Anzeige und die Signallogik werden bei geöffneter App automatisch alle zehn Sekunden neu ausgeführt. Die primäre L&S-Sitzung läuft werktags von 07:30 bis 23:00 Uhr. Danach bleibt der letzte Handelstag sichtbar; über Nacht entstehen keine neuen Kurse.
 
-## Was mit der Position geschieht
+## Private Position und unabhängiger Signal-Bot
 
-Die Positionseingabe ist absichtlich zugeklappt. Sie beeinflusst die Handlung im Chart:
+Die eingetragene private Position dient ausschließlich zur Anzeige ihres ungefähren Werts und Gewinns oder Verlusts zum L&S-Geldkurs. Sie verändert das neutrale **KAUFEN / WARTEN / VERKAUFEN**-Marktsignal nicht. Dadurch bleibt ein Kaufsignal sichtbar, selbst wenn bereits eine private D-Wave-Position besteht oder ihr Einstand über dem aktuellen Kurs liegt.
 
-- ohne Position: **Kaufen** oder **Warten**,
-- mit Position und stabilem Trend: **Halten**,
-- erneute Bestätigung oberhalb des Einstands: **Nachkaufen**,
-- kippender kurzfristiger Trend: **Verkaufen**,
-- unterhalb des Einstands: kein automatisches Verbilligen.
+Daneben besitzt der Signal-Bot ein dauerhaft gespeichertes Papierkonto mit **2.000 € Startkapital**. Bei einem bestätigten Kaufsignal investiert er das verfügbare Spielgeld in D-Wave; ein bestätigtes Verkaufssignal, Stop-Loss oder technisches Ziel schließt die virtuelle Position. Bereits vergangene Chartabschnitte werden nicht nachträglich gehandelt. Das Papierkonto beginnt erst mit Signalen, die nach Aktivierung dieser Funktion in der geöffneten App eintreffen.
 
-Darum erscheint bei einer gespeicherten Position kein zusätzliches Signal mit dem Wort **Kaufen**: Derselbe positive Einstieg wird dann als **Nachkaufen** bewertet. Eine kompakte Zeile unter dem Chart zeigt den gerade aktiven Signalmodus und erklärt auch, wenn die Schutzregel unterhalb des Einstands ein Nachkaufsignal verhindert. Grüne und rote Markierungen sind tatsächlich während der geöffneten App erzeugte Signale; die App erfindet keine rückwirkenden Ein- und Ausstiege für historische Kerzen.
+Das Ausführungsmodell bildet eine Trade-Republic-Standardorder konservativ nach:
 
-Aus Einstandskurs und Stückzahl zeigt der Signalkasten außerdem jederzeit den investierten Betrag, den aktuellen Positionswert sowie den ungefähren laufenden Gewinn oder Verlust in Euro und Prozent. Gebühren und der tatsächliche Ausführungskurs des Brokers sind darin nicht enthalten.
+- Kauf nahe dem aktuellen L&S-Briefkurs und Verkauf nahe dem Geldkurs,
+- **1 € Abwicklungskosten je Transaktion** gemäß der [offiziellen Trade-Republic-Preisübersicht](https://traderepublic.com/de-de/about?openModal=pricing-scheme),
+- tatsächlicher laufender L&S-Geld-/Brief-Spread,
+- zusätzlicher Ausführungspuffer von 0,05 % für eine mögliche ungünstigere Ausführung.
+
+Bei mehr als 0,6 % Spread bleibt das technische Kaufsignal sichtbar, der Papier-Bot wartet jedoch mit der Ausführung. Die Kontozeile zeigt Depotwert, Nettoergebnis und bisher modellierte Gebühren-, Spread- und Ausführungskosten. Steuern, persönliche Freibeträge und nicht vorab bekannte Sonder-/Drittkosten sind nicht enthalten.
 
 ## Signallogik im Hintergrund
 
@@ -60,7 +61,7 @@ Die 5–30-Minuten-Prognose kombiniert fünf Ansätze, statt sich auf einen einz
 - **Rücklauf:** Abstand zum 20-Kerzen-Mittelwert in einer Seitwärtsphase,
 - **Kontext:** Stunde, Tag, Woche und Monat als Filter gegen Trades in einen starken Gegentrend.
 
-Die Gewichtung wechselt zwischen Trend-, Seitwärts- und hoher Volatilitätsphase. Der laufende Geld-/Brief-Spread und – sofern vorhanden – das Verhältnis der angebotenen Stückzahlen wirken als Liquiditätsfilter. Ab 0,6 Prozent Spread wird kein neuer 5–30-Minuten-Einstieg freigegeben. Die angezeigte Zone ist ein ATR-basierter technischer Schwankungsbereich und keine Kursgarantie. Der Modellwert von 0 bis 100 ist ausdrücklich **keine kalibrierte Trefferwahrscheinlichkeit**; seine Qualität muss mit künftigen echten Signalen weiter außerhalb der Entwicklungsdaten geprüft werden.
+Die Gewichtung wechselt zwischen Trend-, Seitwärts- und hoher Volatilitätsphase. Der laufende Geld-/Brief-Spread und – sofern vorhanden – das Verhältnis der angebotenen Stückzahlen wirken als Liquiditätsfilter. Ab 0,6 Prozent Spread wird ein Kaufsignal zwar weiterhin als technisches Testsignal angezeigt, aber nicht im Papierkonto ausgeführt. Die angezeigte Zone ist ein ATR-basierter technischer Schwankungsbereich und keine Kursgarantie. Der Modellwert von 0 bis 100 ist ausdrücklich **keine kalibrierte Trefferwahrscheinlichkeit**; seine Qualität muss mit künftigen echten Signalen weiter außerhalb der Entwicklungsdaten geprüft werden.
 
 ## Echte Vorwärtsprüfung
 
@@ -76,7 +77,7 @@ Obwohl nur ein Chart sichtbar ist, prüft die App weiterhin mehrere Zeitebenen:
 - Stunde und Tag verhindern einen Trade gegen einen starken Gegentrend,
 - Woche und Monat dienen nur als Risiko- und Kontextfilter.
 
-Verwendet werden EMA-Trend, RSI 14, MACD-Histogramm, ATR, 20-Kerzen-Struktur und relatives Volumen. Ein Kaufsignal benötigt kurzfristige Volumenbestätigung. Die längeren Ebenen verlängern den geplanten Trade nicht.
+Verwendet werden EMA-Trend, RSI 14, MACD-Histogramm, ATR und die 20-Kerzen-Struktur. Falls die Kursquelle echtes Volumen liefert, wird zusätzlich relatives Volumen verlangt. Die L&S-Bid-Quote-Historie enthält kein Handelsvolumen; dort übernehmen eine starke gemeinsame 1-/5-/15-Minuten-Preisbestätigung und mindestens drei positive Strategiestimmen diese Prüfung. Die längeren Ebenen verlängern den geplanten Trade nicht.
 
 Methodisch berücksichtigt die Umsetzung sowohl die dokumentierte Trendfortsetzung als auch deren Grenzen und kurzfristige Rückläufe: [Time Series Momentum (Journal of Financial Economics)](https://www.sciencedirect.com/science/article/pii/S0304405X11002613), [Short-Horizon Return Reversals and the Bid-Ask Spread (Journal of Financial Intermediation)](https://www.sciencedirect.com/science/article/pii/S1042957385710066). Eine spätere echte Kalibrierung darf nur zeitlich vorwärts testen; zufällig gemischte Trainings- und Testdaten würden Informationen aus der Zukunft einschleusen. Dafür ist ein Walk-forward-Verfahren wie [TimeSeriesSplit](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) vorgesehen.
 
@@ -115,4 +116,4 @@ Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der lokalen 
 .venv/bin/pytest -q -W error
 ```
 
-Die Tests prüfen unter anderem das Deltaformat der öffentlichen stock3-L&S-Bid-Kerzen, die Auswahl des richtigen L&S-Handelsplatzes, den Geld-/Briefkurs, die L&S-Abschlüsse ab 07:30 Uhr, den Tradegate-Fallback, die auswählbaren Minuten-, Stunden-, Tages-, Wochen- und Monatskerzen, die Zeitraumbegrenzung, die quellspezifischen Handelszeiten, den Livekurs im Positionssignal, Kaufen/Verkaufen/Nachkaufen, die Nachkaufsperre unterhalb des Einstands sowie die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.
+Die Tests prüfen unter anderem das Deltaformat der öffentlichen stock3-L&S-Bid-Kerzen, die Auswahl des richtigen L&S-Handelsplatzes, den Geld-/Briefkurs, den Tradegate-Fallback, die Chartzeiträume, das von der privaten Position unabhängige Kaufen/Verkaufen-Signal sowie das 2.000-€-Papierkonto mit realem Spread, 1-€-Orderkosten, Ausführungspuffer, doppelter Ordervermeidung und Verkaufsjournal.
