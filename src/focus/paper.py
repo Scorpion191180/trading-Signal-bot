@@ -197,6 +197,15 @@ def paper_account(store: DataStore, portfolio_id: int, bid: float) -> PaperAccou
     )
 
 
+def current_paper_account(store: DataStore, bid: float | None = None) -> PaperAccount:
+    """Liest das Papierkonto, ohne eine Order auszulösen."""
+
+    portfolio = _portfolio(store)
+    position = _position(store, portfolio.id)
+    current_bid = bid if bid is not None else position.current_price if position is not None else 0.0
+    return paper_account(store, portfolio.id, current_bid)
+
+
 def paper_order_events(
     store: DataStore,
     portfolio_id: int,

@@ -210,6 +210,23 @@ class FocusForecastOutcome(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class FocusBotStatus(Base):
+    """Heartbeat und letzter sicherer Zustand des unabhängigen Papier-Bots."""
+
+    __tablename__ = "focus_bot_status"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_key: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    run_state: Mapped[str] = mapped_column(String(20), default="STARTING", index=True)
+    signal_action: Mapped[str] = mapped_column(String(20), default="WAIT")
+    signal_score: Mapped[float] = mapped_column(Float, default=50.0)
+    account_state: Mapped[str] = mapped_column(String(30), default="CASH")
+    message: Mapped[str] = mapped_column(Text, default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_quote_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_heartbeat: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 class StrategyVersion(Base):
     __tablename__ = "strategy_versions"
     __table_args__ = (UniqueConstraint("name", "version", name="uq_strategy_version"),)

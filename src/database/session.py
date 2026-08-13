@@ -60,6 +60,7 @@ def create_database(database_url: str) -> Engine:
         def _enable_foreign_keys(dbapi_connection: object, _connection_record: object) -> None:
             cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
     Base.metadata.create_all(engine)
     if engine.dialect.name == "sqlite":

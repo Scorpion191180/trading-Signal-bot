@@ -42,6 +42,37 @@ def test_real_position_crud(store):
     assert store.list_real_positions() == []
 
 
+def test_focus_bot_status_is_a_single_updatable_heartbeat(store):
+    first = datetime(2026, 8, 13, 8, 0, tzinfo=UTC)
+    created = store.update_focus_bot_status(
+        bot_key="dwave-paper",
+        run_state="ACTIVE",
+        signal_action="WAIT",
+        signal_score=50.0,
+        account_state="CASH",
+        message="erster Zyklus",
+        heartbeat_at=first,
+    )
+    updated = store.update_focus_bot_status(
+        bot_key="dwave-paper",
+        run_state="ACTIVE",
+        signal_action="BUY",
+        signal_score=72.0,
+        account_state="INVESTIERT",
+        message="Kaufsignal",
+        heartbeat_at=first + timedelta(seconds=10),
+        quote_at=first + timedelta(seconds=9),
+    )
+
+    status = store.get_focus_bot_status()
+    assert status is not None
+    assert created.id == updated.id == status.id
+    assert status.signal_action == "BUY"
+    assert status.account_state == "INVESTIERT"
+    assert status.message == "Kaufsignal"
+    assert status.last_quote_at is not None
+
+
 def test_focus_forecast_is_deduplicated_and_only_resolved_with_future_prices(store):
     forecast_at = datetime(2026, 8, 13, 8, 1, tzinfo=UTC)
     arguments = {

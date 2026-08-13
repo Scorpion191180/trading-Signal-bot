@@ -34,13 +34,13 @@ Für Positionswert und Plus/Minus verwendet die App den **L&S-Geldkurs**, weil d
 
 Die sichtbaren Kerzen werden aus echten Open-, High-, Low- und Close-Werten des gewählten Zeitraums gebaut. Der Körper reicht von Eröffnung bis Schluss; die Dochte reichen bis zum höchsten und niedrigsten tatsächlich beobachteten Kurs. Eine Kerze kann deshalb bei einem echten Doji oder einem Intervall ohne zusätzliche Preisspanne naturgemäß sehr schmal sein.
 
-Die komplette Anzeige und die Signallogik werden bei geöffneter App automatisch alle zehn Sekunden neu ausgeführt. Die primäre L&S-Sitzung läuft werktags von 07:30 bis 23:00 Uhr. Danach bleibt der letzte Handelstag sichtbar; über Nacht entstehen keine neuen Kurse.
+Die Anzeige wird bei geöffneter App automatisch alle zehn Sekunden neu geladen. Die eigentliche Signallogik und das Papierkonto laufen als eigener macOS-Hintergrunddienst auch dann weiter, wenn Browser und Streamlit-App geschlossen sind. Die primäre L&S-Sitzung läuft werktags von 07:30 bis 23:00 Uhr. Danach bleibt der Dienst aktiv, pausiert aber die Kursanalyse bis zur nächsten Sitzung.
 
 ## Private Position und unabhängiger Signal-Bot
 
 Die eingetragene private Position dient ausschließlich zur Anzeige ihres ungefähren Werts und Gewinns oder Verlusts zum L&S-Geldkurs. Sie verändert das neutrale **KAUFEN / WARTEN / VERKAUFEN**-Marktsignal nicht. Dadurch bleibt ein Kaufsignal sichtbar, selbst wenn bereits eine private D-Wave-Position besteht oder ihr Einstand über dem aktuellen Kurs liegt.
 
-Daneben besitzt der Signal-Bot ein dauerhaft gespeichertes Papierkonto mit **2.000 € Startkapital**. Bei einem bestätigten Kaufsignal investiert er das verfügbare Spielgeld in D-Wave; ein bestätigtes Verkaufssignal, Stop-Loss oder technisches Ziel schließt die virtuelle Position. Bereits vergangene Chartabschnitte werden nicht nachträglich gehandelt. Das Papierkonto beginnt erst mit Signalen, die nach Aktivierung dieser Funktion in der geöffneten App eintreffen.
+Daneben besitzt der Signal-Bot ein dauerhaft gespeichertes Papierkonto mit **2.000 € Startkapital**. Bei einem bestätigten Kaufsignal investiert er das verfügbare Spielgeld in D-Wave; ein bestätigtes Verkaufssignal, Stop-Loss oder technisches Ziel schließt die virtuelle Position. Bereits vergangene Chartabschnitte werden nicht nachträglich gehandelt. Die App zeigt nur Konto, Signale und Heartbeat an; ausschließlich der Hintergrunddienst darf Papierorders schreiben. Es gibt weiterhin keine Verbindung zu einem Broker und keine Echtgeldorder.
 
 Das Ausführungsmodell bildet eine Trade-Republic-Standardorder konservativ nach:
 
@@ -109,6 +109,14 @@ streamlit run app.py
 
 Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der lokalen SQLite-Datenbank gespeichert. Broker-Zugangsdaten werden nicht benötigt oder gespeichert.
 
+Den unabhängigen Papier-Bot einmalig als macOS-LaunchAgent installieren:
+
+```bash
+.venv/bin/python scripts/install_background_bot.py
+```
+
+Der Dienst startet sofort und danach automatisch bei jeder macOS-Anmeldung. Sein Heartbeat steht direkt in der Kontozeile der App. Der Mac muss eingeschaltet, angemeldet, wach und mit dem Internet verbunden sein; während Ruhezustand oder Ausschalten kann der lokale Dienst keine neuen Signale verarbeiten. Protokolle liegen unter `data/dwave-paper-bot.log` und `data/dwave-paper-bot.error.log`.
+
 ## Tests
 
 ```bash
@@ -116,4 +124,4 @@ Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der lokalen 
 .venv/bin/pytest -q -W error
 ```
 
-Die Tests prüfen unter anderem das Deltaformat der öffentlichen stock3-L&S-Bid-Kerzen, die Auswahl des richtigen L&S-Handelsplatzes, den Geld-/Briefkurs, den Tradegate-Fallback, die Chartzeiträume, das von der privaten Position unabhängige Kaufen/Verkaufen-Signal sowie das 2.000-€-Papierkonto mit realem Spread, 1-€-Orderkosten, Ausführungspuffer, doppelter Ordervermeidung und Verkaufsjournal.
+Die Tests prüfen unter anderem das Deltaformat der öffentlichen stock3-L&S-Bid-Kerzen, die Auswahl des richtigen L&S-Handelsplatzes, den Geld-/Briefkurs, den Tradegate-Fallback, die Chartzeiträume, das von der privaten Position unabhängige Kaufen/Verkaufen-Signal sowie das 2.000-€-Papierkonto mit realem Spread, 1-€-Orderkosten, Ausführungspuffer, doppelter Ordervermeidung, Verkaufsjournal und Hintergrund-Heartbeat.

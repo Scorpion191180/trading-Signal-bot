@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 from .models import (
     AgentRun,
+    FocusBotStatus,
     FocusForecast,
     FocusForecastOutcome,
     NewsRecord,
@@ -735,6 +736,45 @@ class DataStore:
                     .limit(limit)
                 )
             )
+
+    def update_focus_bot_status(
+        self,
+        *,
+        bot_key: str,
+        run_state: str,
+        signal_action: str,
+        signal_score: float,
+        account_state: str,
+        message: str,
+        heartbeat_at: datetime,
+        quote_at: datetime | None = None,
+        last_error: str = "",
+    ) -> FocusBotStatus:
+        """Schreibt genau eine Statuszeile, die App und LaunchAgent gemeinsam lesen."""
+
+        normalized_key = bot_key.strip()
+        if not normalized_key:
+            raise ValueError("Der Hintergrund-Bot benötigt einen eindeutigen Schlüssel.")
+        with self.sessions.begin() as session:
+            status = session.scalar(select(FocusBotStatus).where(FocusBotStatus.bot_key == normalized_key))
+            if status is None:
+                status = FocusBotStatus(bot_key=normalized_key)
+                session.add(status)
+            status.run_state = run_state
+            status.signal_action = signal_action
+            status.signal_score = signal_score
+            status.account_state = account_state
+            status.message = message
+            status.last_error = last_error
+            status.last_heartbeat = _aware_utc(heartbeat_at)
+            if quote_at is not None:
+                status.last_quote_at = _aware_utc(quote_at)
+            session.flush()
+            return status
+
+    def get_focus_bot_status(self, bot_key: str = "dwave-paper") -> FocusBotStatus | None:
+        with self.sessions() as session:
+            return session.scalar(select(FocusBotStatus).where(FocusBotStatus.bot_key == bot_key.strip()))
 
     def upsert_news(self, items: list[NewsItem]) -> int:
         """Speichert reale Meldungen idempotent und vereinigt deren Symbolbezug."""

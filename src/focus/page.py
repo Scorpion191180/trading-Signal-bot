@@ -12,8 +12,9 @@ import streamlit as st
 
 from src.data import ProviderError, YFinanceMarketDataProvider
 from src.database import DataStore
+from src.database.models import FocusBotStatus
 
-from .analysis import DWAVE_INSTRUMENT, FocusPosition, IntradaySignal, analyze_timeframes, build_market_signal
+from .analysis import DWAVE_INSTRUMENT, FocusPosition, analyze_timeframes, build_market_signal
 from .charts import day_signal_chart
 from .data import TimeframeBundle, load_dwave_timeframes
 from .display import (
@@ -26,7 +27,7 @@ from .display import (
     select_display_candles,
 )
 from .lang_schwarz import LangSchwarzQuoteProvider
-from .paper import PaperAccount, paper_order_events, run_paper_account
+from .paper import PaperAccount, current_paper_account, paper_order_events
 from .quote import (
     LiveQuote,
     TradegateQuoteProvider,
@@ -303,14 +304,34 @@ def _signal_mode_text(position: FocusPosition, quote: LiveQuote) -> str:
     )
 
 
-def _render_paper_account(account: PaperAccount, quote: LiveQuote) -> None:
+def _render_paper_account(
+    account: PaperAccount,
+    quote: LiveQuote,
+    bot_status: FocusBotStatus | None,
+) -> None:
+    display_state = bot_status.account_state if bot_status is not None else account.state
     state_color = (
         "#58c981"
-        if account.state == "INVESTIERT"
+        if display_state == "INVESTIERT"
         else "#f59e0b"
-        if "SPREAD" in account.state
+        if "SPREAD" in display_state
         else "#94a3b8"
     )
+    service_color = "#e06469"
+    service_text = "HINTERGRUND NICHT GESTARTET"
+    if bot_status is not None:
+        heartbeat = bot_status.last_heartbeat
+        heartbeat = heartbeat.replace(tzinfo=UTC) if heartbeat.tzinfo is None else heartbeat.astimezone(UTC)
+        heartbeat_age = (datetime.now(UTC) - heartbeat).total_seconds()
+        heartbeat_time = heartbeat.astimezone(ZoneInfo("Europe/Berlin"))
+        if heartbeat_age <= 180 and bot_status.run_state == "ERROR":
+            service_text = f"HINTERGRUND FEHLER · {heartbeat_time:%H:%M:%S}"
+        elif heartbeat_age <= 180:
+            service_color = "#58c981"
+            mode = "PAUSE" if bot_status.run_state == "PAUSED" else bot_status.signal_action
+            service_text = f"HINTERGRUND AKTIV · {mode} · {heartbeat_time:%H:%M:%S}"
+        else:
+            service_text = f"HINTERGRUND INAKTIV · letzter Kontakt {heartbeat_time:%H:%M:%S}"
     result_color = "#58c981" if account.result_eur >= 0 else "#e06469"
     spread_eur = quote.ask - quote.bid
     position_text = (
@@ -321,7 +342,8 @@ def _render_paper_account(account: PaperAccount, quote: LiveQuote) -> None:
     st.markdown(
         '<div class="paper-account-bar">'
         '<b>BOT-TEST · 2.000 €</b>'
-        f'<span style="color:{state_color}">{account.state}</span>'
+        f'<span style="color:{service_color}">{service_text}</span>'
+        f'<span style="color:{state_color}">{display_state}</span>'
         f'<span>{position_text}</span>'
         f'<span>Depot {account.equity:.2f} €</span>'
         f'<span style="color:{result_color}">{account.result_eur:+.2f} € '
@@ -333,48 +355,6 @@ def _render_paper_account(account: PaperAccount, quote: LiveQuote) -> None:
         f'Puffer {account.total_slippage_cost:.2f}) · Steuern nicht enthalten</small>'
         '</div>',
         unsafe_allow_html=True,
-    )
-
-
-def _update_forward_validation(
-    store: DataStore,
-    candles: pd.DataFrame,
-    quote: LiveQuote,
-    signal: IntradaySignal,
-) -> dict[str, float | int | None]:
-    observations = [
-        (pd.Timestamp(timestamp).to_pydatetime(), float(price))
-        for timestamp, price in candles["close"].items()
-    ]
-    store.evaluate_focus_forecasts(
-        DWAVE_INSTRUMENT.exchange_symbol,
-        observations,
-        provider=quote.venue,
-    )
-    if (
-        signal.market_open
-        and signal.data_age_minutes <= 4
-        and signal.forecast_low is not None
-        and signal.forecast_high is not None
-    ):
-        store.record_focus_forecast(
-            symbol=DWAVE_INSTRUMENT.exchange_symbol,
-            provider=quote.venue,
-            forecast_at=quote.quoted_at or quote.fetched_at,
-            entry_price=quote.bid,
-            bid=quote.bid,
-            ask=quote.ask,
-            direction=signal.forecast_direction,
-            model_score=signal.score,
-            forecast_low=signal.forecast_low,
-            forecast_high=signal.forecast_high,
-            market_regime=signal.market_regime,
-            strategy_votes=signal.strategy_votes,
-            spread_percent=signal.spread_percent or 0.0,
-        )
-    return store.focus_forecast_metrics(
-        symbol=DWAVE_INSTRUMENT.exchange_symbol,
-        horizon_minutes=15,
     )
 
 
@@ -436,11 +416,14 @@ def _automatic_day_chart(store: DataStore) -> None:
         require_volume_confirmation=candles.attrs.get("quote_type") != "bid",
         enforce_liquidity_filter=False,
     )
-    signal_time = quote.quoted_at or quote.fetched_at
-    paper_account = run_paper_account(store, quote, signal, signal_at=signal_time)
+    paper_account = current_paper_account(store, quote.bid)
+    bot_status = store.get_focus_bot_status()
     events = paper_order_events(store, paper_account.portfolio_id, candles.index[-1])
-    validation = _update_forward_validation(store, candles, quote, signal)
-    _render_paper_account(paper_account, quote)
+    validation = store.focus_forecast_metrics(
+        symbol=DWAVE_INSTRUMENT.exchange_symbol,
+        horizon_minutes=15,
+    )
+    _render_paper_account(paper_account, quote, bot_status)
 
     current_period = st.session_state.get("dwave_chart_period", "Intraday")
     if current_period not in PERIOD_OPTIONS:
@@ -551,7 +534,8 @@ def _automatic_day_chart(store: DataStore) -> None:
     st.caption(
         f"{source_text}{' · Ersatzquelle' if fallback_active else ' · Hauptquelle'} · "
         f"Kurszeit {quote_time:%H:%M:%S} · automatisch alle 10 Sekunden · "
-        "Zeichnen, Zoom, Pan, Crosshair und PNG-Export über die Chartleiste · keine automatische Order"
+        "Zeichnen, Zoom, Pan, Crosshair und PNG-Export über die Chartleiste · "
+        "Papierorders laufen unabhängig im macOS-Hintergrunddienst"
     )
     st.caption(_signal_mode_text(position, quote))
     st.caption(_validation_text(validation))
