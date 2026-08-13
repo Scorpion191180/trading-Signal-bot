@@ -11,7 +11,7 @@ from src.database import DataStore, create_database, create_session_factory
 from src.focus.page import focus_page
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "0.7-provider-scoped"
+SERVICE_SCHEMA_VERSION = "0.8-professional-chart"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
@@ -21,13 +21,41 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.2rem; padding-bottom: 3rem; max-width: 1050px;}
-    div[data-testid="stMetric"] {border: 1px solid rgba(128,128,128,.24); padding: .7rem; border-radius: .8rem;}
+    :root {color-scheme: dark;}
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {background: #12191c;}
+    [data-testid="stHeader"] {background: rgba(18,25,28,.92); height: 2.2rem;}
+    .block-container {padding: .15rem .8rem 1.2rem; max-width: none;}
     [data-testid="stSidebar"] {display: none;}
-    @media (max-width: 640px) {
-      .block-container {padding-left: .7rem; padding-right: .7rem;}
-      h1 {font-size: 1.62rem !important;}
-      h2 {font-size: 1.22rem !important;}
+    .market-strip {
+      display: flex; align-items: center; gap: 0; overflow-x: auto; white-space: nowrap;
+      margin: 0 -.8rem .25rem; border-bottom: 1px solid #2b3539; border-top: 1px solid #2b3539;
+      background: #0d1315; min-height: 25px; scrollbar-width: none;
+    }
+    .market-cell {font-size: .68rem; padding: .24rem .58rem; border-right: 1px solid #2b3539; color: #d6dde0;}
+    .market-cell em {font-style: normal; margin-left: .15rem;}
+    .market-unavailable {color: #66767d;}
+    .instrument-header {display: flex; align-items: center; gap: clamp(1rem, 4vw, 3.5rem); min-height: 3rem;}
+    .instrument-name {font-size: 1.12rem; font-weight: 650; color: #f3f6f7; padding: .38rem 0; white-space: nowrap;}
+    .instrument-name span, .venue-name span {color: #9aa8ad; font-size: .8rem;}
+    .venue-name {font-size: .9rem; color: #e1e7e9; padding-top: .25rem;}
+    .venue-name small {display: block; color: #728087; font-size: .58rem; margin-top: -.05rem;}
+    .live-price {font-size: 1.08rem; font-weight: 700; color: #f3f6f7; padding-top: .2rem; white-space: nowrap;}
+    .live-price span {font-size: .88rem; margin-left: .2rem;}
+    .live-price small {display: block; color: #728087; font-size: .62rem; font-weight: 500;}
+    [data-testid="stPlotlyChart"] {border-top: 1px solid #2a3438; border-bottom: 1px solid #2a3438;}
+    [data-testid="stPills"] button, [data-testid="stSegmentedControl"] button {
+      min-height: 1.9rem; border-radius: .38rem !important; font-size: .72rem;
+    }
+    [data-testid="stPopover"] > button {min-height: 2rem; border-color: #344147;}
+    [data-testid="stCaptionContainer"] {color: #77868c; font-size: .68rem;}
+    .modebar {top: 6px !important; right: 4px !important;}
+    .modebar-btn path {fill: #a7b3b8 !important;}
+    @media (max-width: 760px) {
+      .block-container {padding-left: .35rem; padding-right: .35rem;}
+      .market-strip {margin-left: -.35rem; margin-right: -.35rem;}
+      .instrument-header {gap: .7rem; flex-wrap: wrap;}
+      .instrument-name {font-size: .95rem;}
+      .live-price {font-size: .9rem;}
       div[data-testid="stHorizontalBlock"] {gap: .4rem;}
     }
     </style>

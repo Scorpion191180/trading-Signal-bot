@@ -90,7 +90,7 @@ def load_dwave_timeframes(provider: MarketDataProvider) -> TimeframeBundle:
     requests = {
         "5m": MarketDataRequest(selected_symbol, "5m", "1mo", minimum_rows=80, require_latest_volume=False),
         "1h": MarketDataRequest(selected_symbol, "1h", "6mo", minimum_rows=80, require_latest_volume=False),
-        "1d": MarketDataRequest(selected_symbol, "1d", "5y", minimum_rows=200, require_latest_volume=False),
+        "1d": MarketDataRequest(selected_symbol, "1d", "max", minimum_rows=200, require_latest_volume=False),
     }
     for key, request in requests.items():
         try:

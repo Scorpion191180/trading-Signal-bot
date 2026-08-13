@@ -68,15 +68,17 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     assert len(figure.data[0].open) == 8
     assert figure.data[0].high[0] > max(figure.data[0].open[0], figure.data[0].close[0])
     assert figure.data[0].low[0] < min(figure.data[0].open[0], figure.data[0].close[0])
-    assert figure.data[0].whiskerwidth == 0.8
+    assert figure.data[0].whiskerwidth == 0.65
     assert any("HALTEN" in annotation.text for annotation in figure.layout.annotations)
-    assert figure.layout.uirevision == "dwave-trading-day-5"
+    assert figure.layout.uirevision == "dwave-professional-Intraday-5-Kerzen"
+    assert figure.layout.dragmode == "pan"
+    assert figure.layout.xaxis.showspikes
+    assert figure.layout.yaxis.side == "right"
     assert any("Einstand" in annotation.text for annotation in figure.layout.annotations)
     assert any("Investiert 171.00 €" in annotation.text for annotation in figure.layout.annotations)
     assert any("Verkaufswert 173.80 €" in annotation.text for annotation in figure.layout.annotations)
     assert any("Plus/Minus +2.80 €" in annotation.text for annotation in figure.layout.annotations)
-    assert any("Geld 17.380 €" in annotation.text for annotation in figure.layout.annotations)
-    assert any("Brief 17.400 €" in annotation.text for annotation in figure.layout.annotations)
+    assert len(figure.layout.shapes) >= 3
 
     hour_figure = day_signal_chart(
         candles,
@@ -87,8 +89,8 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
         candle_minutes=60,
     )
     assert hour_figure.data[0].name == "1-Stunde-Kerzen"
-    assert "1-Stunde-Kerzen" in hour_figure.layout.xaxis.title.text
-    assert hour_figure.layout.uirevision == "dwave-trading-day-60"
+    assert hour_figure.layout.xaxis.title.text == ""
+    assert hour_figure.layout.uirevision == "dwave-professional-Intraday-60-Kerzen"
 
     quiet_minutes = candles.reindex(
         pd.date_range(candles.index[0], periods=240, freq="1min", tz="UTC")
@@ -106,6 +108,19 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     assert len(minute_figure.data[0].x) == 240
     assert minute_figure.data[1].name == "Minutenverlauf"
     assert pd.Timestamp(minute_figure.layout.xaxis.range[0]) == quiet_minutes.index[0].tz_convert("Europe/Berlin")
+
+    line_figure = day_signal_chart(
+        candles,
+        quote,
+        signal,
+        FocusPosition(),
+        [],
+        chart_style="Linie",
+        overlays={"EMA"},
+    )
+    assert line_figure.data[0].name == "Kurs"
+    assert [trace.name for trace in line_figure.data[1:3]] == ["EMA 8", "EMA 21"]
+    assert line_figure.layout.showlegend
 
 
 def test_distant_entry_does_not_flatten_the_day_chart():

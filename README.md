@@ -8,7 +8,7 @@ Eine bewusst reduzierte Streamlit-App für genau ein Instrument:
 - ISIN **US26740W1099**
 - geplanter Trade-Horizont **5 bis 30 Minuten**
 
-Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktualisierten Tageschart. Die App führt keine Order aus. Ihre technischen Signale sind keine Anlageberatung und keine Erfolgs- oder Gewinngarantie.
+Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktualisierten, professionellen Kurschart. Die App führt keine Order aus. Ihre technischen Signale sind keine Anlageberatung und keine Erfolgs- oder Gewinngarantie.
 
 ## Was im Chart sichtbar ist
 
@@ -20,7 +20,11 @@ Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktu
 - Stop und technisches Ziel, wenn die aktuelle Handlung diese Marken benötigt,
 - Kaufen-, Nachkaufen- und Verkaufen-Markierungen, die während der geöffneten Sitzung tatsächlich erzeugt wurden.
 
-Das sichtbare Kerzenintervall kann direkt über dem Chart auf **1, 5, 15 oder 30 Minuten** sowie **1, 2 oder 5 Stunden** gestellt werden. Stundenkerzen beginnen passend zur L&S-Sitzung um 07:30 Uhr statt an einer willkürlichen vollen Uhrzeit. Die Auswahl verändert nur die Darstellung; die Signallogik prüft weiterhin unabhängig ihre festen Zeitebenen.
+Die Bedienung orientiert sich an der fotografierten professionellen Chartansicht: oben stehen Marktüberblick, Instrument, Handelsplatz und Livekurs; im Chart stehen OHLC-Werte und das aktuelle Kurzfristsignal; Kurs und Preisachse liegen rechts. Der Zeitraum kann unten zwischen **Intraday, 1 Woche, 1/3/6 Monaten, 1/3/5/10 Jahren, YTD und Max** gewechselt werden. Je nach Zeitraum bietet die App nur sinnvolle echte Kerzenebenen von **1 Minute bis 1 Monat** an. Sie erzeugt keine vermeintlichen Minutenkurse aus Tagesdaten.
+
+Über dem Chart lassen sich Kerzen- und Linienansicht sowie EMA 8/21, Prognosezone, Signale und Position einzeln ein- oder ausblenden. Die schwebende Plotly-Werkzeugleiste bietet Zoomen, Verschieben, Fadenkreuz, Linien/freie Pfade/Rechtecke zeichnen, Zeichnungen löschen, Achsen zurücksetzen, Vollbild über die Streamlit-Ansicht und PNG-Export. Mit Mausrad oder Trackpad wird gezoomt; bei aktiver Verschiebung lässt sich der Zeitraum horizontal bewegen. Zeichnungen sind Arbeitshilfen in der laufenden Browseransicht und keine gespeicherten Handelsregeln.
+
+Das Intraday-Kerzenintervall kann direkt über dem Chart auf **1, 5, 15 oder 30 Minuten** sowie **1, 2 oder 5 Stunden** gestellt werden. Stundenkerzen beginnen passend zur L&S-Sitzung um 07:30 Uhr statt an einer willkürlichen vollen Uhrzeit. Die Auswahl verändert nur die Darstellung; die Signallogik prüft weiterhin unabhängig ihre festen Zeitebenen.
 
 Die 1-Minuten-Ansicht startet bei höchstens den letzten 90 tatsächlich aktiven Handelsminuten; bei einem ruhigen Tag wird dadurch automatisch mehr vom Tag gezeigt. Ein dezenter Stufenverlauf verbindet die einzelnen Abschlüsse. Herauszoomen zeigt weiterhin den kompletten Handelstag. Minuten ohne eigenen L&S-Abschluss werden mit dem zuletzt gehandelten Kurs fortgeführt, damit die Zeitachse nicht aus großen Löchern besteht; das Volumen dieser Minuten bleibt null.
 
@@ -78,7 +82,7 @@ Methodisch berücksichtigt die Umsetzung sowohl die dokumentierte Trendfortsetzu
 
 **Tradegate BSX** bleibt als automatische Ersatzquelle aktiv, falls Lang & Schwarz vorübergehend nicht erreichbar oder unvollständig ist. Die gerade verwendete Quelle steht jederzeit direkt unter dem Chart. Für Tradegate endet die Signalfreigabe bereits um 22:00 Uhr.
 
-**yfinance** liefert die längeren deutschen Kontextreihen für Stunde, Tag, Woche und Monat. Diese Ebenen werden nicht mehr einzeln angezeigt.
+**yfinance** liefert die deutschen historischen Reihen für die auswählbaren längeren Chartzeiträume sowie den übergeordneten Stunden-, Tages-, Wochen- und Monatskontext der Signallogik. Die App kennzeichnet L&S trotzdem eindeutig als Quelle des laufenden Kurses; historische Yahoo-Kerzen werden nicht als L&S-Ticks ausgegeben.
 
 Ein alter letzter Umsatz ist nicht automatisch ein alter Markt: Geld und Brief können sich ändern, obwohl in einer Minute kein Handel zustande kommt. Deshalb zeigt der Chart den laufenden Geld-/Briefmittelpunkt separat. Ein Kaufsignal verlangt trotzdem echte kurzfristige Handelsaktivität.
 
@@ -105,4 +109,4 @@ Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der lokalen 
 .venv/bin/pytest -q -W error
 ```
 
-Die Tests prüfen unter anderem den L&S-Geld-/Briefkurs, die L&S-Abschlüsse ab 07:30 Uhr, den Tradegate-Fallback, die auswählbaren Minuten- und Stundenkerzen, die quellspezifischen Handelszeiten, den Livekurs im Positionssignal, Kaufen/Verkaufen/Nachkaufen, die Nachkaufsperre unterhalb des Einstands sowie die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.
+Die Tests prüfen unter anderem den L&S-Geld-/Briefkurs, die L&S-Abschlüsse ab 07:30 Uhr, den Tradegate-Fallback, die auswählbaren Minuten-, Stunden-, Tages-, Wochen- und Monatskerzen, die Zeitraumbegrenzung, die quellspezifischen Handelszeiten, den Livekurs im Positionssignal, Kaufen/Verkaufen/Nachkaufen, die Nachkaufsperre unterhalb des Einstands sowie die vorhandenen Daten-, Risiko-, Datenbank- und Backtestregeln.

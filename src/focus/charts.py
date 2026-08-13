@@ -19,12 +19,23 @@ CANDLE_INTERVAL_LABELS = {
     60: "1 Stunde",
     120: "2 Stunden",
     300: "5 Stunden",
+    1440: "1 Tag",
+    10080: "1 Woche",
+    43200: "1 Monat",
 }
 
 
 def _candle_trace_label(minutes: int) -> str:
-    unit = "Minute" if minutes == 1 else "Minuten" if minutes < 60 else "Stunde" if minutes == 60 else "Stunden"
-    value = minutes if minutes < 60 else minutes // 60
+    if minutes < 60:
+        value, unit = minutes, "Minute" if minutes == 1 else "Minuten"
+    elif minutes < 1440:
+        value, unit = minutes // 60, "Stunde" if minutes == 60 else "Stunden"
+    elif minutes < 10080:
+        value, unit = minutes // 1440, "Tag" if minutes == 1440 else "Tage"
+    elif minutes < 43200:
+        value, unit = minutes // 10080, "Woche" if minutes == 10080 else "Wochen"
+    else:
+        value, unit = minutes // 43200, "Monat" if minutes == 43200 else "Monate"
     return f"{value}-{unit}-Kerzen"
 
 
@@ -35,32 +46,51 @@ def day_signal_chart(
     position: FocusPosition,
     signal_events: list[dict[str, object]],
     candle_minutes: int = 5,
+    *,
+    period_label: str = "Intraday",
+    data_is_resampled: bool = False,
+    chart_style: str = "Kerzen",
+    overlays: set[str] | None = None,
 ) -> go.Figure:
-    """Ein einziger Tageschart mit Livekurs und den tatsächlich erzeugten Signalen."""
+    """Professioneller Kurschart mit Livekurs, Werkzeugen und erklärbaren Signalen."""
 
     if candle_minutes not in CANDLE_INTERVAL_LABELS:
         raise ValueError("Das Kerzenintervall wird nicht unterstützt.")
+    if chart_style not in {"Kerzen", "Linie"}:
+        raise ValueError("Diese Chartdarstellung wird nicht unterstützt.")
+    active_overlays = overlays if overlays is not None else {"Prognose", "Signale", "Position"}
     candle_label = _candle_trace_label(candle_minutes)
-    visible = resample_intraday_candles(data, candle_minutes)
+    visible = data.copy() if data_is_resampled else resample_intraday_candles(data, candle_minutes)
     visible.index = visible.index.tz_convert("Europe/Berlin")
     figure = go.Figure()
-    figure.add_trace(
-        go.Candlestick(
-            x=visible.index,
-            open=visible["open"],
-            high=visible["high"],
-            low=visible["low"],
-            close=visible["close"],
-            name=candle_label,
-            increasing_line_color="#22c55e",
-            decreasing_line_color="#ef4444",
-            increasing_fillcolor="rgba(34,197,94,.72)",
-            decreasing_fillcolor="rgba(239,68,68,.72)",
-            increasing_line_width=2,
-            decreasing_line_width=2,
-            whiskerwidth=0.8,
+    if chart_style == "Kerzen":
+        figure.add_trace(
+            go.Candlestick(
+                x=visible.index,
+                open=visible["open"],
+                high=visible["high"],
+                low=visible["low"],
+                close=visible["close"],
+                name=candle_label,
+                increasing_line_color="#66d28a",
+                decreasing_line_color="#e15f64",
+                increasing_fillcolor="#66d28a",
+                decreasing_fillcolor="#e15f64",
+                increasing_line_width=1.25,
+                decreasing_line_width=1.25,
+                whiskerwidth=0.65,
+            )
         )
-    )
+    else:
+        figure.add_trace(
+            go.Scatter(
+                x=visible.index,
+                y=visible["close"],
+                mode="lines",
+                name="Kurs",
+                line={"color": "#66d28a", "width": 2},
+            )
+        )
     if candle_minutes == 1:
         figure.add_trace(
             go.Scatter(
@@ -72,16 +102,34 @@ def day_signal_chart(
                 hoverinfo="skip",
             )
         )
+    if "EMA" in active_overlays:
+        figure.add_trace(
+            go.Scatter(
+                x=visible.index,
+                y=visible["close"].ewm(span=8, adjust=False).mean(),
+                mode="lines",
+                name="EMA 8",
+                line={"color": "#38bdf8", "width": 1.4},
+            )
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=visible.index,
+                y=visible["close"].ewm(span=21, adjust=False).mean(),
+                mode="lines",
+                name="EMA 21",
+                line={"color": "#f59e0b", "width": 1.4},
+            )
+        )
     current_x = visible.index[-1]
     figure.add_trace(
         go.Scatter(
             x=[current_x],
             y=[quote.midpoint],
-            mode="markers+text",
+            mode="markers",
             name="Geld/Brief-Mitte",
-            text=[f"  Mitte {quote.midpoint:.3f} €"],
-            textposition="middle right",
-            marker={"size": 12, "color": signal.color, "line": {"width": 2, "color": "white"}},
+            marker={"size": 9, "color": signal.color, "line": {"width": 1.5, "color": "white"}},
+            hovertemplate=f"Mitte {quote.midpoint:.3f} €<extra></extra>",
         )
     )
     figure.add_hrect(
@@ -89,16 +137,21 @@ def day_signal_chart(
         y1=quote.ask,
         fillcolor="rgba(56,189,248,.08)",
         line_width=0,
-        annotation_text=f"Geld {quote.bid:.3f} · Brief {quote.ask:.3f}",
-        annotation_position="top right",
     )
+    if "Prognose" in active_overlays and signal.forecast_low is not None and signal.forecast_high is not None:
+        figure.add_hrect(
+            y0=signal.forecast_low,
+            y1=signal.forecast_high,
+            fillcolor="rgba(56,189,248,.055)",
+            line={"color": "rgba(56,189,248,.38)", "width": 1, "dash": "dot"},
+        )
 
     event_styles = {
         "BUY": ("Kaufen", "#22c55e", "triangle-up"),
         "ADD": ("Nachkaufen", "#14b8a6", "triangle-up"),
         "SELL": ("Verkaufen", "#ef4444", "triangle-down"),
     }
-    for action, (label, color, symbol) in event_styles.items():
+    for action, (label, color, symbol) in event_styles.items() if "Signale" in active_overlays else ():
         matching = [event for event in signal_events if event.get("action") == action]
         if not matching:
             continue
@@ -121,7 +174,7 @@ def day_signal_chart(
         position.average_price is not None
         and day_low - day_span * 0.25 <= position.average_price <= day_high + day_span * 0.25
     )
-    if position.invested and entry_is_near_chart:
+    if "Position" in active_overlays and position.invested and entry_is_near_chart:
         figure.add_hline(
             y=position.average_price,
             line_dash="dot",
@@ -129,7 +182,7 @@ def day_signal_chart(
             annotation_text=f"Dein Einstand {position.average_price:.3f} €",
             annotation_position="bottom left",
         )
-    if signal.stop_loss is not None:
+    if "Signale" in active_overlays and signal.stop_loss is not None:
         figure.add_hline(
             y=signal.stop_loss,
             line_dash="dash",
@@ -137,7 +190,7 @@ def day_signal_chart(
             annotation_text="Stop",
             annotation_position="bottom right",
         )
-    if signal.target is not None:
+    if "Signale" in active_overlays and signal.target is not None:
         figure.add_hline(
             y=signal.target,
             line_dash="dash",
@@ -147,18 +200,16 @@ def day_signal_chart(
         )
 
     position_text = ""
-    if position.invested and position.average_price and position.quantity:
+    if "Position" in active_overlays and position.invested and position.average_price and position.quantity:
         invested_eur = position.average_price * position.quantity
         current_value = quote.bid * position.quantity
         pnl_eur = (quote.bid - position.average_price) * position.quantity
         pnl_pct = (quote.bid / position.average_price - 1) * 100
         position_text = (
-            f"<br>Investiert {invested_eur:.2f} € · Verkaufswert {current_value:.2f} €"
-            f"<br>Plus/Minus {pnl_eur:+.2f} € · {pnl_pct:+.2f} %"
+            f"Investiert {invested_eur:.2f} € · Verkaufswert {current_value:.2f} € · "
+            f"Plus/Minus {pnl_eur:+.2f} € ({pnl_pct:+.2f} %)"
         )
-    forecast_zone = ""
-    if signal.forecast_low is not None and signal.forecast_high is not None:
-        forecast_zone = f" · Zone {signal.forecast_low:.3f}–{signal.forecast_high:.3f} €"
+    latest = visible.iloc[-1]
     figure.add_annotation(
         xref="paper",
         yref="paper",
@@ -169,36 +220,72 @@ def day_signal_chart(
         align="left",
         showarrow=False,
         text=(
-            f"<b>{signal.headline}</b><br>"
-            f"Geld {quote.bid:.3f} € · Brief {quote.ask:.3f} €<br>"
-            f"5–30 Min {signal.forecast_direction} · Modellwert {signal.score:.0f}/100{forecast_zone}"
-            f"{position_text}"
+            f"<b>D-Wave Quantum · {candle_label}</b> · "
+            f"O: {float(latest['open']):.3f} · H: {float(latest['high']):.3f} · "
+            f"L: {float(latest['low']):.3f} · C: {float(latest['close']):.3f}"
         ),
-        bgcolor="rgba(15,23,42,.88)",
-        bordercolor=signal.color,
-        borderwidth=2,
-        borderpad=10,
-        font={"size": 15, "color": "white"},
+        bgcolor="rgba(17,23,25,.78)",
+        borderpad=4,
+        font={"size": 11, "color": "#cbd5e1"},
     )
     figure.add_annotation(
         xref="paper",
         yref="paper",
         x=0.01,
-        y=0.01,
+        y=0.925,
         xanchor="left",
-        yanchor="bottom",
+        yanchor="top",
+        align="left",
         showarrow=False,
         text=(
-            f"Ensemble: Trend · Momentum · Ausbruch · Rücklauf · Kontext | "
-            f"Marktphase: {signal.market_regime}"
+            f"<b>{signal.headline}</b> · 5–30 Min {signal.forecast_direction} · "
+            f"{signal.score:.0f}/100"
         ),
-        font={"size": 11, "color": "#94a3b8"},
+        bgcolor="rgba(17,23,25,.86)",
+        bordercolor=signal.color,
+        borderwidth=1,
+        borderpad=5,
+        font={"size": 11, "color": "white"},
+    )
+    if position_text:
+        figure.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=0.01,
+            y=0.01,
+            xanchor="left",
+            yanchor="bottom",
+            showarrow=False,
+            text=position_text,
+            bgcolor="rgba(17,23,25,.76)",
+            borderpad=4,
+            font={"size": 10, "color": "#cbd5e1"},
+        )
+    price_color = "#22a06b" if (quote.change_percent or 0) >= 0 else "#c74850"
+    figure.add_annotation(
+        xref="paper",
+        yref="y",
+        x=1.0,
+        y=quote.midpoint,
+        xanchor="left",
+        showarrow=False,
+        text=f" {quote.midpoint:.3f} ",
+        bgcolor=price_color,
+        bordercolor=price_color,
+        font={"size": 11, "color": "white"},
     )
     xaxis: dict[str, object] = {
-        "title": f"Heutiger Handel · echte {candle_label}",
-        "tickformat": "%H:%M",
+        "title": "",
+        "tickformat": "%H:%M" if candle_minutes < 1440 else "%d.%m.%Y",
+        "showgrid": True,
+        "gridcolor": "rgba(100,116,139,.20)",
+        "showspikes": True,
+        "spikemode": "across",
+        "spikesnap": "cursor",
+        "spikecolor": "rgba(226,232,240,.75)",
+        "spikethickness": 1,
     }
-    if candle_minutes == 1 and len(visible) > 180:
+    if period_label == "Intraday" and candle_minutes == 1 and len(visible) > 180:
         active_minutes = visible.index[visible["volume"] > 0]
         if len(active_minutes) >= 90:
             range_start = active_minutes[-90]
@@ -208,15 +295,35 @@ def day_signal_chart(
             range_start = visible.index[-180]
         xaxis["range"] = [range_start, visible.index[-1] + timedelta(minutes=3)]
     figure.update_layout(
-        height=720,
-        margin={"l": 12, "r": 18, "t": 20, "b": 18},
+        height=690,
+        margin={"l": 10, "r": 54, "t": 10, "b": 12},
         xaxis_rangeslider_visible=False,
         xaxis=xaxis,
-        yaxis={"title": "EUR", "side": "right", "fixedrange": False},
-        hovermode="x unified",
-        showlegend=True,
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.01, "x": 0.42},
-        uirevision=f"dwave-trading-day-{candle_minutes}",
+        yaxis={
+            "title": "",
+            "side": "right",
+            "fixedrange": False,
+            "tickformat": ".3f",
+            "showgrid": True,
+            "gridcolor": "rgba(100,116,139,.20)",
+            "showspikes": True,
+            "spikemode": "across",
+            "spikesnap": "cursor",
+            "spikecolor": "rgba(226,232,240,.75)",
+            "spikethickness": 1,
+        },
+        hovermode="x",
+        hoverdistance=50,
+        spikedistance=-1,
+        hoverlabel={"bgcolor": "#1c2529", "font": {"color": "#f8fafc"}},
+        showlegend="EMA" in active_overlays,
+        legend={"orientation": "h", "yanchor": "top", "y": 0.90, "x": 0.01},
+        uirevision=f"dwave-professional-{period_label}-{candle_minutes}-{chart_style}",
+        plot_bgcolor="#12191c",
+        paper_bgcolor="#12191c",
+        font={"color": "#cbd5e1", "family": "Inter, Arial, sans-serif"},
+        dragmode="pan",
+        newshape={"line": {"color": "#94a3b8", "width": 1.5, "dash": "dot"}},
     )
     return figure
 
