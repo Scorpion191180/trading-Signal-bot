@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from dataclasses import asdict
 from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
@@ -22,7 +23,7 @@ from .display import (
     PERIOD_OPTIONS,
     select_display_candles,
 )
-from .lang_schwarz import LangSchwarzQuoteProvider, LangSchwarzSnapshot
+from .lang_schwarz import LangSchwarzQuoteProvider
 from .quote import (
     LiveQuote,
     TradegateQuoteProvider,
@@ -32,13 +33,19 @@ from .quote import (
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _cached_context_data() -> TimeframeBundle:
-    return load_dwave_timeframes(YFinanceMarketDataProvider())
+def _cached_context_data() -> tuple[dict[str, pd.DataFrame], dict[str, str], str, str, str]:
+    """Cached nur serialisierbare Werte, damit ein Code-Reload keine alten Klassentypen festhält."""
+
+    bundle = load_dwave_timeframes(YFinanceMarketDataProvider())
+    return bundle.frames, bundle.errors, bundle.provider, bundle.symbol, bundle.venue
 
 
 @st.cache_data(ttl=10, show_spinner=False)
-def _cached_lang_schwarz_snapshot() -> LangSchwarzSnapshot:
-    return LangSchwarzQuoteProvider().snapshot(DWAVE_INSTRUMENT.isin)
+def _cached_lang_schwarz_snapshot() -> tuple[dict[str, object], pd.DataFrame]:
+    """Vermeidet Dataclass-Objekte im Streamlit-Cache über Code-Reloads hinweg."""
+
+    snapshot = LangSchwarzQuoteProvider().snapshot(DWAVE_INSTRUMENT.isin)
+    return asdict(snapshot.quote), snapshot.trades
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -90,8 +97,8 @@ def _live_market_data() -> tuple[LiveQuote, pd.DataFrame, bool]:
     """Verwendet L&S primär und fällt nur bei einem echten Abruffehler auf Tradegate zurück."""
 
     try:
-        snapshot = _cached_lang_schwarz_snapshot()
-        return snapshot.quote, snapshot.trades, False
+        quote_data, trades = _cached_lang_schwarz_snapshot()
+        return LiveQuote(**quote_data), trades, False
     except ProviderError as primary_error:
         try:
             fallback = TradegateQuoteProvider()
@@ -215,6 +222,20 @@ def _position_summary(position: FocusPosition, quote: LiveQuote) -> str:
     return f"{position.quantity:g} Stück · {pnl:+.2f} €"
 
 
+def _signal_mode_text(position: FocusPosition, quote: LiveQuote) -> str:
+    """Erklärt knapp, warum ein Kauf- oder Nachkaufsignal möglich ist."""
+
+    if not position.invested:
+        return "Signalmodus · nicht investiert: Eine bestätigte Einstiegslage erscheint als KAUFEN."
+    if position.average_price is not None and quote.midpoint < position.average_price:
+        distance = (quote.midpoint / position.average_price - 1) * 100
+        return (
+            "Signalmodus · Position aktiv: Eine bestätigte Einstiegslage heißt NACHKAUFEN. "
+            f"Aktuell {distance:.1f} % unter deinem Einstand – deshalb verhindert die Risikoregel ein Verbilligen."
+        )
+    return "Signalmodus · Position aktiv: Eine bestätigte Einstiegslage erscheint als NACHKAUFEN statt KAUFEN."
+
+
 def _record_signal_event(action: str, price: float, timestamp: pd.Timestamp) -> list[dict[str, object]]:
     events = st.session_state.setdefault("dwave_signal_events", [])
     previous_action = st.session_state.get("dwave_previous_action")
@@ -302,7 +323,8 @@ def _automatic_day_chart(store: DataStore) -> None:
 
     _render_market_strip()
     position = _render_instrument_header(store, quote, fallback_active)
-    bundle = _cached_context_data()
+    frames_data, errors, provider, symbol, venue = _cached_context_data()
+    bundle = TimeframeBundle(frames_data, errors, provider, symbol, venue)
     frames = dict(bundle.frames)
     frames["1m"] = candles
     five_minutes = resample_intraday_candles(candles, 5)
@@ -432,6 +454,7 @@ def _automatic_day_chart(store: DataStore) -> None:
             f"{source} · Kurszeit {quote_time:%H:%M:%S} · automatisch alle 10 Sekunden · "
             "Zeichnen, Zoom, Pan, Crosshair und PNG-Export über die Chartleiste · keine automatische Order"
         )
+        st.caption(_signal_mode_text(position, quote))
         st.caption(_validation_text(validation))
 
 

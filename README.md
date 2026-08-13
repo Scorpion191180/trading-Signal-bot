@@ -44,6 +44,8 @@ Die Positionseingabe ist absichtlich zugeklappt. Sie beeinflusst die Handlung im
 - kippender kurzfristiger Trend: **Verkaufen**,
 - unterhalb des Einstands: kein automatisches Verbilligen.
 
+Darum erscheint bei einer gespeicherten Position kein zusätzliches Signal mit dem Wort **Kaufen**: Derselbe positive Einstieg wird dann als **Nachkaufen** bewertet. Eine kompakte Zeile unter dem Chart zeigt den gerade aktiven Signalmodus und erklärt auch, wenn die Schutzregel unterhalb des Einstands ein Nachkaufsignal verhindert. Grüne und rote Markierungen sind tatsächlich während der geöffneten App erzeugte Signale; die App erfindet keine rückwirkenden Ein- und Ausstiege für historische Kerzen.
+
 Aus Einstandskurs und Stückzahl zeigt der Signalkasten außerdem jederzeit den investierten Betrag, den aktuellen Positionswert sowie den ungefähren laufenden Gewinn oder Verlust in Euro und Prozent. Gebühren und der tatsächliche Ausführungskurs des Brokers sind darin nicht enthalten.
 
 ## Signallogik im Hintergrund
