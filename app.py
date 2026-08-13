@@ -11,6 +11,7 @@ from src.database import DataStore, create_database, create_session_factory
 from src.focus.page import focus_page
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+SERVICE_SCHEMA_VERSION = "0.7-provider-scoped"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
@@ -36,11 +37,14 @@ st.markdown(
 
 
 @st.cache_resource
-def services() -> DataStore:
+def services(schema_version: str = SERVICE_SCHEMA_VERSION) -> DataStore:
+    """Erzeugt den Dienst bei Datenbankschema-Wechseln bewusst neu."""
+
+    _ = schema_version
     settings = AppSettings.from_env()
     engine = create_database(settings.database_url)
     store = DataStore(create_session_factory(engine), settings)
     return store
 
 
-focus_page(services())
+focus_page(services(SERVICE_SCHEMA_VERSION))

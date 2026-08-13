@@ -168,6 +168,48 @@ class SignalRecord(Base):
     analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
 
+class FocusForecast(Base):
+    """Unveränderliche D-Wave-Prognose, bevor der spätere Kurs bekannt ist."""
+
+    __tablename__ = "focus_forecasts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    forecast_key: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    provider: Mapped[str] = mapped_column(String(80))
+    forecast_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    entry_price: Mapped[float] = mapped_column(Float)
+    bid: Mapped[float] = mapped_column(Float)
+    ask: Mapped[float] = mapped_column(Float)
+    direction: Mapped[str] = mapped_column(String(24))
+    model_score: Mapped[float] = mapped_column(Float)
+    forecast_low: Mapped[float] = mapped_column(Float)
+    forecast_high: Mapped[float] = mapped_column(Float)
+    market_regime: Mapped[str] = mapped_column(String(40))
+    strategy_votes: Mapped[str] = mapped_column(Text, default="")
+    spread_percent: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class FocusForecastOutcome(Base):
+    """Nur mit einem später beobachteten Kurs erzeugtes Walk-forward-Ergebnis."""
+
+    __tablename__ = "focus_forecast_outcomes"
+    __table_args__ = (UniqueConstraint("forecast_id", "horizon_minutes", name="uq_focus_forecast_horizon"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("focus_forecasts.id", ondelete="CASCADE"), index=True
+    )
+    horizon_minutes: Mapped[int] = mapped_column(Integer, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observed_price: Mapped[float] = mapped_column(Float)
+    return_percent: Mapped[float] = mapped_column(Float)
+    direction_hit: Mapped[bool] = mapped_column(Boolean)
+    zone_hit: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class StrategyVersion(Base):
     __tablename__ = "strategy_versions"
     __table_args__ = (UniqueConstraint("name", "version", name="uq_strategy_version"),)

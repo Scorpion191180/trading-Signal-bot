@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import func, select
 
-from src.database.models import StrategyVersion, WeightVersion
+from src.database.models import FocusForecastOutcome, StrategyVersion, WeightVersion
 from src.database.repositories import DuplicateOrderError, PortfolioError
 
 
@@ -38,6 +40,65 @@ def test_real_position_crud(store):
     assert store.list_real_positions()[0].symbol == "BSP"
     store.delete_real_position(position.id)
     assert store.list_real_positions() == []
+
+
+def test_focus_forecast_is_deduplicated_and_only_resolved_with_future_prices(store):
+    forecast_at = datetime(2026, 8, 13, 8, 1, tzinfo=UTC)
+    arguments = {
+        "symbol": "RQ0",
+        "provider": "Lang & Schwarz",
+        "forecast_at": forecast_at,
+        "entry_price": 10.0,
+        "bid": 9.99,
+        "ask": 10.01,
+        "direction": "EHER STEIGEND",
+        "model_score": 64.0,
+        "forecast_low": 9.8,
+        "forecast_high": 10.2,
+        "market_regime": "Trend",
+        "strategy_votes": ("Trend 70 ↑", "Momentum 65 ↑"),
+        "spread_percent": 0.2,
+    }
+    forecast, inserted = store.record_focus_forecast(**arguments)
+    duplicate, duplicate_inserted = store.record_focus_forecast(
+        **{**arguments, "forecast_at": forecast_at + timedelta(minutes=3)}
+    )
+
+    assert inserted is True
+    assert duplicate_inserted is False
+    assert duplicate.id == forecast.id
+    assert len(store.list_focus_forecasts()) == 1
+    assert store.evaluate_focus_forecasts(
+        "RQ0",
+        [(forecast_at + timedelta(minutes=4), 10.5)],
+    ) == 0
+    assert store.evaluate_focus_forecasts(
+        "RQ0",
+        [(forecast_at + timedelta(minutes=5), 10.5)],
+        provider="Tradegate BSX",
+    ) == 0
+
+    resolved = store.evaluate_focus_forecasts(
+        "RQ0",
+        [
+            (forecast_at + timedelta(minutes=5), 10.03),
+            (forecast_at + timedelta(minutes=15), 10.10),
+            (forecast_at + timedelta(minutes=30), 10.30),
+        ],
+        provider="Lang & Schwarz",
+    )
+
+    assert resolved == 3
+    metrics = store.focus_forecast_metrics(symbol="RQ0", horizon_minutes=15)
+    assert metrics["recorded"] == 1
+    assert metrics["completed"] == 1
+    assert metrics["direction_accuracy"] == 100.0
+    assert metrics["zone_coverage"] == 100.0
+    assert metrics["average_return"] == pytest.approx(1.0)
+    with store.sessions() as session:
+        outcomes = list(session.scalars(select(FocusForecastOutcome)))
+    assert len(outcomes) == 3
+    assert outcomes[-1].zone_hit is False
 
 
 def test_virtual_buy_sell_and_journal(store):

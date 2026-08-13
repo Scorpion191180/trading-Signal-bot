@@ -4,19 +4,25 @@ from __future__ import annotations
 
 import json
 import uuid
+from bisect import bisect_left
 from dataclasses import asdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.analysis.signals import SignalResult
 from src.config import STRATEGIES, WEIGHTS, AppSettings
 from src.news import NewsItem
 from src.portfolio.execution import simulated_execution
 
+if TYPE_CHECKING:
+    from src.analysis.signals import SignalResult
+
 from .models import (
     AgentRun,
+    FocusForecast,
+    FocusForecastOutcome,
     NewsRecord,
     RealPosition,
     SignalRecord,
@@ -28,6 +34,12 @@ from .models import (
     WatchlistItem,
     WeightVersion,
 )
+
+FOCUS_FORECAST_HORIZONS = (5, 15, 30)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class PortfolioError(RuntimeError):
@@ -519,6 +531,175 @@ class DataStore:
     def list_signals(self, limit: int = 100) -> list[SignalRecord]:
         with self.sessions() as session:
             return list(session.scalars(select(SignalRecord).order_by(SignalRecord.analyzed_at.desc()).limit(limit)))
+
+    def record_focus_forecast(
+        self,
+        *,
+        symbol: str,
+        provider: str,
+        forecast_at: datetime,
+        entry_price: float,
+        bid: float,
+        ask: float,
+        direction: str,
+        model_score: float,
+        forecast_low: float,
+        forecast_high: float,
+        market_regime: str,
+        strategy_votes: tuple[str, ...],
+        spread_percent: float,
+    ) -> tuple[FocusForecast, bool]:
+        """Speichert höchstens eine unveränderliche Prognose pro Fünf-Minuten-Block."""
+
+        timestamp = _aware_utc(forecast_at).replace(second=0, microsecond=0)
+        bucket = timestamp.replace(minute=timestamp.minute - timestamp.minute % 5)
+        key = f"{symbol.upper().strip()}:{provider}:{bucket:%Y%m%dT%H%MZ}"
+        with self.sessions.begin() as session:
+            existing = session.scalar(select(FocusForecast).where(FocusForecast.forecast_key == key))
+            if existing is not None:
+                return existing, False
+            record = FocusForecast(
+                forecast_key=key,
+                symbol=symbol.upper().strip(),
+                provider=provider,
+                forecast_at=forecast_at,
+                entry_price=entry_price,
+                bid=bid,
+                ask=ask,
+                direction=direction,
+                model_score=model_score,
+                forecast_low=forecast_low,
+                forecast_high=forecast_high,
+                market_regime=market_regime,
+                strategy_votes="\n".join(strategy_votes),
+                spread_percent=spread_percent,
+            )
+            session.add(record)
+            session.flush()
+            return record, True
+
+    def evaluate_focus_forecasts(
+        self,
+        symbol: str,
+        observations: list[tuple[datetime, float]],
+        *,
+        provider: str | None = None,
+    ) -> int:
+        """Löst Prognosen nur mit Kursen auf, die nach ihrem Erstellungszeitpunkt liegen."""
+
+        ordered = sorted((_aware_utc(timestamp), float(price)) for timestamp, price in observations)
+        if not ordered:
+            return 0
+        observation_times = [item[0] for item in ordered]
+        first_time, last_time = observation_times[0], observation_times[-1]
+        resolved = 0
+        with self.sessions.begin() as session:
+            forecast_query = select(FocusForecast).where(
+                FocusForecast.symbol == symbol.upper().strip(),
+                FocusForecast.forecast_at >= first_time - timedelta(minutes=30),
+                FocusForecast.forecast_at <= last_time - timedelta(minutes=5),
+            )
+            if provider is not None:
+                forecast_query = forecast_query.where(FocusForecast.provider == provider)
+            forecasts = list(session.scalars(forecast_query))
+            if not forecasts:
+                return 0
+            forecast_ids = [forecast.id for forecast in forecasts]
+            existing = set(
+                session.execute(
+                    select(FocusForecastOutcome.forecast_id, FocusForecastOutcome.horizon_minutes).where(
+                        FocusForecastOutcome.forecast_id.in_(forecast_ids)
+                    )
+                ).all()
+            )
+            for forecast in forecasts:
+                forecast_at = _aware_utc(forecast.forecast_at)
+                for horizon in FOCUS_FORECAST_HORIZONS:
+                    if (forecast.id, horizon) in existing:
+                        continue
+                    target = forecast_at + timedelta(minutes=horizon)
+                    position = bisect_left(observation_times, target)
+                    if position >= len(ordered):
+                        continue
+                    observed_at, observed_price = ordered[position]
+                    if observed_at > target + timedelta(minutes=2):
+                        continue
+                    return_percent = (observed_price / forecast.entry_price - 1) * 100
+                    cost_hurdle = max(forecast.spread_percent, 0.0)
+                    if forecast.direction == "EHER STEIGEND":
+                        direction_hit = return_percent > cost_hurdle
+                    elif forecast.direction == "EHER FALLEND":
+                        direction_hit = return_percent < -cost_hurdle
+                    else:
+                        direction_hit = abs(return_percent) <= max(cost_hurdle, 0.15)
+                    session.add(
+                        FocusForecastOutcome(
+                            forecast_id=forecast.id,
+                            horizon_minutes=horizon,
+                            observed_at=observed_at,
+                            observed_price=observed_price,
+                            return_percent=return_percent,
+                            direction_hit=direction_hit,
+                            zone_hit=forecast.forecast_low <= observed_price <= forecast.forecast_high,
+                        )
+                    )
+                    resolved += 1
+        return resolved
+
+    def focus_forecast_metrics(
+        self,
+        *,
+        symbol: str,
+        horizon_minutes: int = 15,
+        limit: int = 200,
+    ) -> dict[str, float | int | None]:
+        """Liefert rein vorwärts gemessene Kennzahlen ohne nachträgliche Neuberechnung."""
+
+        if horizon_minutes not in FOCUS_FORECAST_HORIZONS:
+            raise ValueError("Dieser Prognosehorizont wird nicht unterstützt.")
+        normalized = symbol.upper().strip()
+        with self.sessions() as session:
+            recorded = int(
+                session.scalar(
+                    select(func.count()).select_from(FocusForecast).where(FocusForecast.symbol == normalized)
+                )
+                or 0
+            )
+            outcomes = list(
+                session.scalars(
+                    select(FocusForecastOutcome)
+                    .join(FocusForecast, FocusForecast.id == FocusForecastOutcome.forecast_id)
+                    .where(
+                        FocusForecast.symbol == normalized,
+                        FocusForecastOutcome.horizon_minutes == horizon_minutes,
+                    )
+                    .order_by(FocusForecastOutcome.observed_at.desc())
+                    .limit(limit)
+                )
+            )
+        completed = len(outcomes)
+        return {
+            "recorded": recorded,
+            "completed": completed,
+            "direction_accuracy": (
+                sum(outcome.direction_hit for outcome in outcomes) / completed * 100 if completed else None
+            ),
+            "zone_coverage": sum(outcome.zone_hit for outcome in outcomes) / completed * 100 if completed else None,
+            "average_return": (
+                sum(outcome.return_percent for outcome in outcomes) / completed if completed else None
+            ),
+        }
+
+    def list_focus_forecasts(self, *, symbol: str = "RQ0", limit: int = 100) -> list[FocusForecast]:
+        with self.sessions() as session:
+            return list(
+                session.scalars(
+                    select(FocusForecast)
+                    .where(FocusForecast.symbol == symbol.upper().strip())
+                    .order_by(FocusForecast.forecast_at.desc())
+                    .limit(limit)
+                )
+            )
 
     def upsert_news(self, items: list[NewsItem]) -> int:
         """Speichert reale Meldungen idempotent und vereinigt deren Symbolbezug."""

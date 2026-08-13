@@ -54,6 +54,12 @@ Die 5–30-Minuten-Prognose kombiniert fünf Ansätze, statt sich auf einen einz
 
 Die Gewichtung wechselt zwischen Trend-, Seitwärts- und hoher Volatilitätsphase. Der laufende Geld-/Brief-Spread und – sofern vorhanden – das Verhältnis der angebotenen Stückzahlen wirken als Liquiditätsfilter. Ab 0,6 Prozent Spread wird kein neuer 5–30-Minuten-Einstieg freigegeben. Die angezeigte Zone ist ein ATR-basierter technischer Schwankungsbereich und keine Kursgarantie. Der Modellwert von 0 bis 100 ist ausdrücklich **keine kalibrierte Trefferwahrscheinlichkeit**; seine Qualität muss mit künftigen echten Signalen weiter außerhalb der Entwicklungsdaten geprüft werden.
 
+## Echte Vorwärtsprüfung
+
+Während die App geöffnet ist, speichert sie höchstens eine unveränderliche Prognose pro Fünf-Minuten-Block und aktiver Kursquelle. Nach 5, 15 und 30 Minuten wird diese Prognose ausschließlich mit dem dann später eingetroffenen Kurs derselben Quelle bewertet. L&S- und Tradegate-Verläufe werden dabei nicht vermischt. Fehlende Zeitpunkte – etwa weil die App geschlossen war oder die Sitzung endete – werden nicht mit Kursen des nächsten Tages ersetzt.
+
+Die kompakte Prüfzeile unter dem Chart zeigt zunächst nur den Aufbau der Stichprobe. Erst ab 20 abgeschlossenen 15-Minuten-Fällen blendet sie Richtungstreffer und den Anteil der Kurse innerhalb der prognostizierten Zone ein. Für einen Richtungstreffer muss die Kursbewegung außerdem den beim Signal gespeicherten Geld-/Brief-Spread überwinden. Alte Prognosen werden bei späteren Strategieänderungen nicht nachträglich umgeschrieben.
+
 Obwohl nur ein Chart sichtbar ist, prüft die App weiterhin mehrere Zeitebenen:
 
 - 1 Minute erzeugt den Auslöser,

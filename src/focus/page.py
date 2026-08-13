@@ -11,7 +11,7 @@ import streamlit as st
 from src.data import ProviderError, YFinanceMarketDataProvider
 from src.database import DataStore
 
-from .analysis import DWAVE_INSTRUMENT, FocusPosition, analyze_timeframes, build_intraday_signal
+from .analysis import DWAVE_INSTRUMENT, FocusPosition, IntradaySignal, analyze_timeframes, build_intraday_signal
 from .charts import CANDLE_INTERVAL_LABELS, day_signal_chart
 from .data import TimeframeBundle, load_dwave_timeframes
 from .lang_schwarz import LangSchwarzQuoteProvider, LangSchwarzSnapshot
@@ -139,8 +139,68 @@ def _record_signal_event(action: str, price: float, timestamp: pd.Timestamp) -> 
     return current_events
 
 
+def _update_forward_validation(
+    store: DataStore,
+    candles: pd.DataFrame,
+    quote: LiveQuote,
+    signal: IntradaySignal,
+) -> dict[str, float | int | None]:
+    observations = [
+        (pd.Timestamp(timestamp).to_pydatetime(), float(price))
+        for timestamp, price in candles["close"].items()
+    ]
+    store.evaluate_focus_forecasts(
+        DWAVE_INSTRUMENT.exchange_symbol,
+        observations,
+        provider=quote.venue,
+    )
+    if (
+        signal.market_open
+        and signal.data_age_minutes <= 4
+        and signal.forecast_low is not None
+        and signal.forecast_high is not None
+    ):
+        store.record_focus_forecast(
+            symbol=DWAVE_INSTRUMENT.exchange_symbol,
+            provider=quote.venue,
+            forecast_at=quote.quoted_at or quote.fetched_at,
+            entry_price=quote.midpoint,
+            bid=quote.bid,
+            ask=quote.ask,
+            direction=signal.forecast_direction,
+            model_score=signal.score,
+            forecast_low=signal.forecast_low,
+            forecast_high=signal.forecast_high,
+            market_regime=signal.market_regime,
+            strategy_votes=signal.strategy_votes,
+            spread_percent=signal.spread_percent or 0.0,
+        )
+    return store.focus_forecast_metrics(
+        symbol=DWAVE_INSTRUMENT.exchange_symbol,
+        horizon_minutes=15,
+    )
+
+
+def _validation_text(metrics: dict[str, float | int | None]) -> str:
+    recorded = int(metrics["recorded"] or 0)
+    completed = int(metrics["completed"] or 0)
+    if completed < 20:
+        forecast_label = "Prognose" if recorded == 1 else "Prognosen"
+        return (
+            f"Vorwärtsprüfung · {recorded} {forecast_label} gespeichert · "
+            f"{completed} nach 15 Minuten ausgewertet · "
+            f"aussagekräftiger ab 20 abgeschlossenen Fällen"
+        )
+    return (
+        f"Vorwärtsprüfung · {completed} echte 15-Minuten-Fälle · "
+        f"Richtungstreffer {float(metrics['direction_accuracy']):.1f} % · "
+        f"Kurs in Zone {float(metrics['zone_coverage']):.1f} % · "
+        "nur später eingetroffene Kurse"
+    )
+
+
 @st.fragment(run_every=10)
-def _automatic_day_chart(position: FocusPosition, candle_minutes: int) -> None:
+def _automatic_day_chart(store: DataStore, position: FocusPosition, candle_minutes: int) -> None:
     try:
         quote, trades, fallback_active = _live_market_data()
         candles = market_day_candles(trades, quote)
@@ -174,6 +234,7 @@ def _automatic_day_chart(position: FocusPosition, candle_minutes: int) -> None:
         else None,
     )
     events = _record_signal_event(signal.action, quote.midpoint, candles.index[-1])
+    validation = _update_forward_validation(store, candles, quote, signal)
     st.plotly_chart(
         day_signal_chart(candles, quote, signal, position, events, candle_minutes),
         width="stretch",
@@ -186,6 +247,7 @@ def _automatic_day_chart(position: FocusPosition, candle_minutes: int) -> None:
         f"{source} · Kurszeit {quote_time:%H:%M:%S} · automatisch alle 10 Sekunden · "
         "keine automatische Order"
     )
+    st.caption(_validation_text(validation))
 
 
 def focus_page(store: DataStore) -> None:
@@ -199,4 +261,4 @@ def focus_page(store: DataStore) -> None:
         key="dwave_candle_interval",
     )
     position = _position_control(store)
-    _automatic_day_chart(position, int(candle_minutes))
+    _automatic_day_chart(store, position, int(candle_minutes))
