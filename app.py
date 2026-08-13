@@ -44,17 +44,29 @@ st.markdown(
     .live-price small {display: block; color: #728087; font-size: .62rem; font-weight: 500;}
     [data-testid="stPlotlyChart"] {border-top: 1px solid #2a3438; border-bottom: 1px solid #2a3438;}
     .chart-selection-summary {
-      display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin: .25rem 0 .15rem;
-      padding: .38rem .6rem; border: 1px solid #2b3539; background: #0f1619; color: #bcc8cc;
-      font-size: .72rem; border-radius: .35rem;
+      display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; margin: .08rem 0 .1rem;
+      padding: .18rem .45rem; border: 1px solid #2b3539; background: #0f1619; color: #9eacb1;
+      font-size: .62rem; border-radius: .25rem; min-height: 1.25rem;
     }
     .chart-selection-summary b {color: #f1f5f6;}
-    .chart-selection-summary span {padding-left: 1rem; border-left: 1px solid #334046;}
-    .chart-selection-summary small {margin-left: auto; color: #718087;}
-    [data-testid="stPills"] button, [data-testid="stSegmentedControl"] button {
-      min-height: 1.9rem; border-radius: .38rem !important; font-size: .72rem;
+    .chart-selection-summary span {padding-left: .7rem; border-left: 1px solid #334046;}
+    [data-testid="stButtonGroup"] button {
+      min-height: 1.5rem !important; height: 1.5rem !important; border-radius: .28rem !important;
+      padding: .05rem .32rem !important; font-size: .61rem !important; white-space: nowrap !important;
     }
-    [data-testid="stPopover"] > button {min-height: 2rem; border-color: #344147;}
+    [data-testid="stButtonGroup"] button p {
+      font-size: .61rem !important; line-height: 1 !important; white-space: nowrap !important;
+    }
+    [data-testid="stSelectbox"], [data-testid="stSelectbox"] .react-aria-ComboBox,
+    [data-testid="stSelectbox"] .react-aria-ComboBox > div, [data-testid="stSelectbox"] input {
+      min-height: 1.55rem !important; height: 1.55rem !important; font-size: .62rem !important;
+    }
+    [data-testid="stSelectbox"] svg {width: .7rem; height: .7rem;}
+    [data-testid="stPopoverButton"] {
+      min-height: 1.55rem !important; height: 1.55rem !important; padding: .05rem .25rem !important;
+      border-color: #344147; font-size: .61rem !important; white-space: nowrap !important;
+    }
+    [data-testid="stPopoverButton"] p {font-size: .61rem !important; white-space: nowrap !important;}
     [data-testid="stCaptionContainer"] {color: #77868c; font-size: .68rem;}
     .modebar {top: 6px !important; right: 4px !important;}
     .modebar-btn path {fill: #a7b3b8 !important;}
@@ -64,7 +76,6 @@ st.markdown(
       .instrument-header {gap: .7rem; flex-wrap: wrap;}
       .instrument-name {font-size: .95rem;}
       .live-price {font-size: .9rem;}
-      .chart-selection-summary small {margin-left: 0; width: 100%;}
       div[data-testid="stHorizontalBlock"] {gap: .4rem;}
     }
     </style>

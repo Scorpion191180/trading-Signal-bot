@@ -5,7 +5,7 @@ from datetime import timedelta
 import pandas as pd
 import pytest
 
-from src.focus.display import PERIOD_LABELS, PERIOD_OPTIONS, select_display_candles
+from src.focus.display import PERIOD_COMPACT_LABELS, PERIOD_LABELS, PERIOD_OPTIONS, select_display_candles
 
 
 def _candles(index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -58,3 +58,5 @@ def test_period_labels_make_day_month_and_year_views_explicit():
     assert PERIOD_LABELS["1M"] == "1 Monat"
     assert PERIOD_LABELS["1J"] == "1 Jahr"
     assert PERIOD_LABELS["Max"] == "Gesamte Historie"
+    assert PERIOD_COMPACT_LABELS["1W"] == "1W"
+    assert PERIOD_COMPACT_LABELS["Max"] == "Max"

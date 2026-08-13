@@ -19,6 +19,7 @@ from .data import TimeframeBundle, load_dwave_timeframes
 from .display import (
     DEFAULT_INTERVAL,
     DISPLAY_INTERVAL_LABELS,
+    PERIOD_COMPACT_LABELS,
     PERIOD_INTERVALS,
     PERIOD_LABELS,
     PERIOD_OPTIONS,
@@ -420,49 +421,52 @@ def _automatic_day_chart(store: DataStore) -> None:
     current_period = st.session_state.get("dwave_chart_period", "Intraday")
     if current_period not in PERIOD_OPTIONS:
         current_period = "Intraday"
-    selected_period = st.pills(
-        "Angezeigter Zeitraum der Aktie",
-        options=PERIOD_OPTIONS,
-        default=current_period,
-        format_func=PERIOD_LABELS.get,
-        key="dwave_chart_period",
-        help="Legt fest, ob der heutige Handelstag, eine Woche, ein Monat, ein Jahr oder die gesamte Historie sichtbar ist.",
-        width="stretch",
+    period_column, interval_column, options_column = st.columns(
+        [7.7, 1.55, 0.75],
+        vertical_alignment="center",
+        gap="small",
     )
-    period_label = str(selected_period or current_period)
-
-    style_column, interval_column, overlay_column = st.columns(
-        [1.3, 3.4, 4.7],
-        vertical_alignment="bottom",
-    )
-    with style_column:
-        chart_style = st.segmented_control(
-            "Darstellung",
-            options=("Kerzen", "Linie"),
-            default="Kerzen",
-            key="dwave_chart_style",
+    with period_column:
+        selected_period = st.pills(
+            "Zeitraum",
+            options=PERIOD_OPTIONS,
+            default=current_period,
+            format_func=PERIOD_COMPACT_LABELS.get,
+            key="dwave_chart_period",
+            label_visibility="collapsed",
+            help="Heute, Woche, Monat, Jahr oder gesamte Historie",
             width="stretch",
         )
+    period_label = str(selected_period or current_period)
     interval_options = PERIOD_INTERVALS[period_label]
     with interval_column:
-        candle_minutes = st.pills(
-            "Eine Kerze entspricht",
+        candle_minutes = st.selectbox(
+            "Kerzengröße",
             options=interval_options,
-            default=DEFAULT_INTERVAL[period_label],
+            index=interval_options.index(DEFAULT_INTERVAL[period_label]),
             format_func=DISPLAY_INTERVAL_LABELS.get,
             key=f"dwave_interval_{period_label}",
-            help="Größere Kerzen fassen mehrere kleinere Kerzen zusammen. Deshalb sinkt ihre Anzahl.",
+            label_visibility="collapsed",
+            help="Zeitspanne einer Kerze",
             width="stretch",
         )
-    with overlay_column:
-        overlays = st.pills(
-            "Einblendungen",
-            options=("EMA", "Prognose", "Signale", "Position"),
-            selection_mode="multi",
-            default=("Prognose", "Signale", "Position"),
-            key="dwave_chart_overlays",
-            width="stretch",
-        )
+    with options_column:
+        with st.popover("⋯", icon=":material/tune:", width="stretch"):
+            chart_style = st.segmented_control(
+                "Darstellung",
+                options=("Kerzen", "Linie"),
+                default="Kerzen",
+                key="dwave_chart_style",
+                width="stretch",
+            )
+            overlays = st.pills(
+                "Einblendungen",
+                options=("EMA", "Prognose", "Signale", "Position"),
+                selection_mode="multi",
+                default=("Prognose", "Signale", "Position"),
+                key="dwave_chart_overlays",
+                width="stretch",
+            )
     selected_minutes = int(candle_minutes or DEFAULT_INTERVAL[period_label])
     try:
         display_candles = select_display_candles(
@@ -483,7 +487,6 @@ def _automatic_day_chart(store: DataStore) -> None:
         '<div class="chart-selection-summary">'
         f'<b>Ansicht: {period_text}</b><span>Jede Kerze: {candle_text}</span>'
         f'<span>{len(display_candles)} Kerzen</span>'
-        '<small>Größere Kerzen bündeln mehrere kleinere Kursabschnitte.</small>'
         '</div>',
         unsafe_allow_html=True,
     )

@@ -23,6 +23,19 @@ PERIOD_LABELS = {
     "10J": "10 Jahre",
     "Max": "Gesamte Historie",
 }
+PERIOD_COMPACT_LABELS = {
+    "Intraday": "Heute",
+    "1W": "1W",
+    "1M": "1M",
+    "3M": "3M",
+    "6M": "6M",
+    "YTD": "YTD",
+    "1J": "1J",
+    "3J": "3J",
+    "5J": "5J",
+    "10J": "10J",
+    "Max": "Max",
+}
 PERIOD_INTERVALS = {
     "Intraday": (1, 5, 15, 30, 60, 120, 300),
     "1W": (5, 15, 30, 60, 1440),
