@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from src.focus.analysis import IntradaySignal
-from src.focus.paper import PAPER_PORTFOLIO_NAME
+from src.focus.paper import PAPER_PORTFOLIO_NAME, current_paper_account
 from src.focus.quote import LiveQuote
 from src.focus.worker import FocusPaperWorker, _latest_trading_day, session_is_active
 
@@ -154,3 +154,17 @@ def test_worker_pauses_without_loading_market_data_outside_session(store):
     assert status is not None
     assert status.run_state == "PAUSED"
     assert "07:30" in status.message
+
+
+def test_worker_does_not_load_market_data_or_trade_when_bot_is_disabled(store):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    account = current_paper_account(store)
+    store.set_portfolio_active(account.portfolio_id, False)
+    worker = FocusPaperWorker(store, provider=FakeStock3Provider(now), clock=lambda: now)
+
+    assert worker.run_once() is None
+    assert store.list_orders(account.portfolio_id) == []
+    status = store.get_focus_bot_status()
+    assert status is not None
+    assert status.run_state == "DISABLED"
+    assert "ausgeschaltet" in status.message

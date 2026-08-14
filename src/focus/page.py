@@ -32,8 +32,6 @@ from .display import (
     DISPLAY_INTERVAL_LABELS,
     PERIOD_COMPACT_LABELS,
     PERIOD_INTERVALS,
-    PERIOD_LABELS,
-    PERIOD_OPTIONS,
     select_display_candles,
 )
 from .lang_schwarz import LangSchwarzQuoteProvider
@@ -46,6 +44,8 @@ from .quote import (
 )
 from .replay import replay_focus_day
 from .stock3 import Stock3LangSchwarzProvider
+
+COMPACT_PERIOD_OPTIONS = ("Intraday", "1W", "1M", "3M", "1J", "Max")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -337,62 +337,127 @@ def _signal_mode_text(position: FocusPosition, quote: LiveQuote) -> str:
 
 
 def _render_paper_account(
+    store: DataStore,
     account: PaperAccount,
     quote: LiveQuote,
     bot_status: FocusBotStatus | None,
+    signal: IntradaySignal,
 ) -> None:
+    portfolio = store.get_portfolio(account.portfolio_id)
+    bot_enabled = bool(portfolio.active)
     service_color = "#e06469"
-    service_text = "HINTERGRUND NICHT GESTARTET"
+    service_text = "BOT AUS"
     bot_status_is_fresh = False
-    if bot_status is not None:
+    if bot_enabled and bot_status is not None:
         heartbeat = bot_status.last_heartbeat
         heartbeat = heartbeat.replace(tzinfo=UTC) if heartbeat.tzinfo is None else heartbeat.astimezone(UTC)
         heartbeat_age = (datetime.now(UTC) - heartbeat).total_seconds()
         heartbeat_time = heartbeat.astimezone(ZoneInfo("Europe/Berlin"))
         bot_status_is_fresh = heartbeat_age <= 180
         if heartbeat_age <= 180 and bot_status.run_state == "ERROR":
-            service_text = f"HINTERGRUND FEHLER · {heartbeat_time:%H:%M:%S}"
+            service_text = f"BOT-FEHLER · {heartbeat_time:%H:%M}"
         elif heartbeat_age <= 180 and bot_status.run_state == "WARMUP":
             service_color = "#f59e0b"
-            service_text = f"HINTERGRUND AKTIV · DATENAUFBAU · {heartbeat_time:%H:%M:%S}"
+            service_text = f"BOT LÄDT DATEN · {heartbeat_time:%H:%M}"
         elif heartbeat_age <= 180:
             service_color = "#58c981"
             mode = "PAUSE" if bot_status.run_state == "PAUSED" else bot_status.signal_action
-            service_text = f"HINTERGRUND AKTIV · {mode} · {heartbeat_time:%H:%M:%S}"
+            service_text = f"BOT EIN · {mode} · {heartbeat_time:%H:%M}"
         else:
-            service_text = f"HINTERGRUND INAKTIV · letzter Kontakt {heartbeat_time:%H:%M:%S}"
-    display_state = bot_status.account_state if bot_status is not None and bot_status_is_fresh else account.state
-    state_color = (
-        "#58c981"
-        if display_state == "INVESTIERT"
-        else "#f59e0b"
-        if "SPREAD" in display_state
-        else "#94a3b8"
+            service_text = f"BOT OHNE KONTAKT · {heartbeat_time:%H:%M}"
+    elif bot_enabled:
+        service_text = "BOT STARTET"
+    display_state = (
+        bot_status.account_state if bot_enabled and bot_status is not None and bot_status_is_fresh else account.state
     )
     result_color = "#58c981" if account.result_eur >= 0 else "#e06469"
-    spread_eur = quote.ask - quote.bid
+    signal_color = "#58c981" if signal.action == "BUY" else "#e06469" if signal.action == "SELL" else "#f59e0b"
+    signal_label = {"BUY": "KAUFEN", "SELL": "VERKAUFEN"}.get(signal.action, "WARTEN")
     position_text = (
         f"{account.quantity:.3f} Stk. @ {account.average_price:.3f} €"
         if account.average_price is not None
-        else "keine Bot-Position"
+        else "keine Position"
     )
     st.markdown(
-        '<div class="paper-account-bar">'
-        '<b>BOT-TEST · 2.000 €</b>'
-        f'<span style="color:{service_color}">{service_text}</span>'
-        f'<span style="color:{state_color}">{display_state}</span>'
-        f'<span>{position_text}</span>'
-        f'<span>Depot {account.equity:.2f} €</span>'
-        f'<span style="color:{result_color}">{account.result_eur:+.2f} € '
-        f'({account.result_percent:+.2f} %)</span>'
-        f'<small>TR-Standardorder-Modell: 1 € je Order · Spread {spread_eur:.3f} € '
-        f'({quote.spread_percent:.2f} %) · Ausführungspuffer 0,05 % · '
-        f'Kosten bisher {account.total_transaction_costs:.2f} € '
-        f'(Gebühr {account.total_fees:.2f} · Spread {account.total_spread_cost:.2f} · '
-        f'Puffer {account.total_slippage_cost:.2f}) · Steuern nicht enthalten</small>'
-        '</div>',
+        '<div class="bot-console">'
+        f'<span class="bot-service" style="color:{service_color}">● {service_text}</span>'
+        f'<span class="bot-signal"><small>SIGNAL</small> '
+        f'<b style="color:{signal_color}">{signal_label} · {signal.score:.0f}/100</b></span>'
+        f"<span><small>TREND</small> <b>{escape(signal.forecast_direction.title())}</b></span>"
+        f"<span><small>KURS</small> <b>{quote.bid:.3f} €</b></span>"
+        f"<span><small>DEPOT</small> <b>{account.equity:.2f} €</b></span>"
+        f'<span><small>ERGEBNIS</small> <b style="color:{result_color}">'
+        f"{account.result_eur:+.2f} € · {account.result_percent:+.2f} %</b></span>"
+        f"<span><small>STATUS</small> <b>{display_state}</b></span>"
+        f"<span><small>POSITION</small> <b>{position_text}</b></span>"
+        "</div>",
         unsafe_allow_html=True,
     )
+    with st.container(key="bot_controls"):
+        toggle_column, reset_column = st.columns(2, gap="small")
+        toggle_label = "Bot ausschalten" if bot_enabled else "Bot einschalten"
+        toggle_icon = ":material/pause:" if bot_enabled else ":material/play_arrow:"
+        if toggle_column.button(
+            toggle_label,
+            icon=toggle_icon,
+            type="primary" if not bot_enabled else "secondary",
+            width="stretch",
+            key="dwave_toggle_bot",
+        ):
+            new_state = not bot_enabled
+            store.set_portfolio_active(account.portfolio_id, new_state)
+            store.update_focus_bot_status(
+                bot_key="dwave-paper",
+                run_state="STARTING" if new_state else "DISABLED",
+                signal_action=signal.action,
+                signal_score=signal.score,
+                account_state=account.state,
+                message=(
+                    "Vom Benutzer eingeschaltet · nächster Prüfzyklus folgt"
+                    if new_state
+                    else "Vom Benutzer ausgeschaltet · keine automatischen Orders"
+                ),
+                heartbeat_at=datetime.now(UTC),
+            )
+            st.rerun()
+        with reset_column.popover(
+            "Vermögen / Reset",
+            icon=":material/account_balance_wallet:",
+            width="stretch",
+        ):
+            starting_capital = st.number_input(
+                "Startvermögen in EUR",
+                min_value=100.0,
+                max_value=1_000_000.0,
+                value=float(account.initial_capital),
+                step=100.0,
+                format="%.2f",
+                key="dwave_starting_capital",
+            )
+            st.caption("Löscht Bot-Position, Orders und Ergebnis und schaltet den Bot aus.")
+            if st.button(
+                "Depot zurücksetzen",
+                icon=":material/restart_alt:",
+                type="primary",
+                width="stretch",
+                key="dwave_reset_bot",
+            ):
+                store.reset_portfolio(
+                    account.portfolio_id,
+                    float(starting_capital),
+                    active=False,
+                )
+                store.update_focus_bot_status(
+                    bot_key="dwave-paper",
+                    run_state="DISABLED",
+                    signal_action="WAIT",
+                    signal_score=50.0,
+                    account_state="CASH",
+                    message="Depot zurückgesetzt · Bot ausgeschaltet",
+                    heartbeat_at=datetime.now(UTC),
+                )
+                st.session_state.pop("dwave_today_replay", None)
+                st.rerun()
 
 
 def _validation_text(metrics: dict[str, float | int | None]) -> str:
@@ -556,13 +621,11 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
 @st.fragment(run_every=10)
 def _automatic_day_chart(store: DataStore) -> None:
     try:
-        quote, candles, fallback_active, source_name = _live_market_data()
+        quote, candles, _fallback_active, _source_name = _live_market_data()
     except ProviderError:
         st.error("Der Live-Tageschart ist gerade nicht erreichbar. Die App versucht es in zehn Sekunden erneut.")
         return
 
-    _render_market_strip()
-    position = _render_instrument_header(store, quote, fallback_active, source_name)
     frames_data, errors, provider, symbol, venue = _cached_context_data()
     bundle = TimeframeBundle(frames_data, errors, provider, symbol, venue)
     frames = _stock3_context_frames(bundle.frames)
@@ -601,70 +664,63 @@ def _automatic_day_chart(store: DataStore) -> None:
     paper_account = current_paper_account(store, quote.bid)
     bot_status = store.get_focus_bot_status()
     events = paper_order_events(store, paper_account.portfolio_id, candles.index[-1])
-    validation = _versioned_forecast_metrics(store)
-    _render_paper_account(paper_account, quote, bot_status)
-    _render_trend_forecast(signal)
+    position = FocusPosition(
+        invested=paper_account.quantity > 0,
+        average_price=paper_account.average_price,
+        quantity=paper_account.quantity or None,
+    )
+    _render_paper_account(store, paper_account, quote, bot_status, signal)
 
     current_period = st.session_state.get("dwave_chart_period", "Intraday")
-    if current_period not in PERIOD_OPTIONS:
+    if current_period not in COMPACT_PERIOD_OPTIONS:
         current_period = "Intraday"
-    period_column, interval_column, options_column = st.columns(
-        [7.7, 1.55, 0.75],
-        vertical_alignment="center",
-        gap="small",
-    )
-    with period_column:
-        selected_period = st.pills(
-            "Zeitraum",
-            options=PERIOD_OPTIONS,
-            default=current_period,
-            format_func=PERIOD_COMPACT_LABELS.get,
-            key="dwave_chart_period",
-            label_visibility="collapsed",
-            help="Heute, Woche, Monat, Jahr oder gesamte Historie",
-            width="stretch",
+    with st.container(key="chart_toolbar"):
+        period_column, interval_column, options_column = st.columns(
+            [7.7, 1.55, 0.75],
+            vertical_alignment="center",
+            gap="small",
         )
-    period_label = str(selected_period or current_period)
-    interval_options = PERIOD_INTERVALS[period_label]
-    with interval_column:
-        candle_minutes = st.selectbox(
-            "Kerzengröße",
-            options=interval_options,
-            index=interval_options.index(DEFAULT_INTERVAL[period_label]),
-            format_func=DISPLAY_INTERVAL_LABELS.get,
-            key=f"dwave_interval_{period_label}",
-            label_visibility="collapsed",
-            help="Zeitspanne einer Kerze",
-            width="stretch",
-        )
-    with options_column:
-        with st.popover("⋯", icon=":material/tune:", width="stretch"):
-            chart_style = st.segmented_control(
-                "Darstellung",
-                options=("Kerzen", "Linie"),
-                default="Kerzen",
-                key="dwave_chart_style",
+        with period_column:
+            selected_period = st.pills(
+                "Zeitraum",
+                options=COMPACT_PERIOD_OPTIONS,
+                default=current_period,
+                format_func=PERIOD_COMPACT_LABELS.get,
+                key="dwave_chart_period",
+                label_visibility="collapsed",
+                help="Heute, Woche, Monat, Jahr oder gesamte Historie",
                 width="stretch",
             )
-            overlays = st.pills(
-                "Einblendungen",
-                options=("EMA", "Prognose", "Zonen", "Signale", "Position"),
-                selection_mode="multi",
-                default=("Prognose", "Zonen", "Signale", "Position"),
-                key="dwave_chart_overlays",
+        period_label = str(selected_period or current_period)
+        interval_options = PERIOD_INTERVALS[period_label]
+        with interval_column:
+            candle_minutes = st.selectbox(
+                "Kerzengröße",
+                options=interval_options,
+                index=interval_options.index(DEFAULT_INTERVAL[period_label]),
+                format_func=DISPLAY_INTERVAL_LABELS.get,
+                key=f"dwave_interval_{period_label}",
+                label_visibility="collapsed",
+                help="Zeitspanne einer Kerze",
                 width="stretch",
             )
-            if st.button(
-                "Heutigen v5-Replay berechnen",
-                icon=":material/history:",
-                key="dwave_run_today_replay",
-                width="stretch",
-            ):
-                with st.spinner("Tages-Replay ohne Blick in spätere Kerzen …"):
-                    st.session_state["dwave_today_replay"] = _cached_today_replay()
-    replay_summary = st.session_state.get("dwave_today_replay")
-    if isinstance(replay_summary, dict):
-        _render_replay_summary(replay_summary)
+        with options_column:
+            with st.popover("⋯", icon=":material/tune:", width="stretch"):
+                chart_style = st.segmented_control(
+                    "Darstellung",
+                    options=("Kerzen", "Linie"),
+                    default="Kerzen",
+                    key="dwave_chart_style",
+                    width="stretch",
+                )
+                overlays = st.pills(
+                    "Einblendungen",
+                    options=("EMA", "Prognose", "Zonen", "Signale", "Position"),
+                    selection_mode="multi",
+                    default=("Prognose", "Zonen", "Signale", "Position"),
+                    key="dwave_chart_overlays",
+                    width="stretch",
+                )
     selected_minutes = int(candle_minutes or DEFAULT_INTERVAL[period_label])
     try:
         display_candles = select_display_candles(
@@ -679,15 +735,6 @@ def _automatic_day_chart(store: DataStore) -> None:
         selected_minutes = 5
         display_candles = resample_intraday_candles(candles, 5)
 
-    period_text = PERIOD_LABELS[period_label]
-    candle_text = DISPLAY_INTERVAL_LABELS[selected_minutes]
-    st.markdown(
-        '<div class="chart-selection-summary">'
-        f'<b>Ansicht: {period_text}</b><span>Jede Kerze: {candle_text}</span>'
-        f'<span>{len(display_candles)} Kerzen</span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
     figure = day_signal_chart(
         display_candles,
         quote,
@@ -719,17 +766,6 @@ def _automatic_day_chart(store: DataStore) -> None:
         },
         key=f"dwave_professional_chart_{period_label}_{selected_minutes}_{chart_style}",
     )
-    quote_time = (quote.quoted_at or quote.fetched_at).astimezone(ZoneInfo("Europe/Berlin"))
-    chart_source = str(display_candles.attrs.get("provider") or source_name)
-    source_text = source_name if chart_source == source_name else f"Kurs: {source_name} · Chart: {chart_source}"
-    st.caption(
-        f"{source_text}{' · Ersatzquelle' if fallback_active else ' · Hauptquelle'} · "
-        f"Kurszeit {quote_time:%H:%M:%S} · automatisch alle 10 Sekunden · "
-        "Zeichnen, Zoom, Pan, Crosshair und PNG-Export über die Chartleiste · "
-        "Papierorders laufen unabhängig im macOS-Hintergrunddienst"
-    )
-    st.caption(_signal_mode_text(position, quote))
-    st.caption(_validation_text(validation))
 
 
 def focus_page(store: DataStore) -> None:

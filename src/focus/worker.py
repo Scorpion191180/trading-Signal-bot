@@ -233,6 +233,23 @@ class FocusPaperWorker:
                 model_version=PAPER_STRATEGY_VERSION,
             )
 
+    def _bot_enabled(self) -> bool:
+        account = current_paper_account(self.store)
+        return bool(self.store.get_portfolio(account.portfolio_id).active)
+
+    def record_disabled(self, now: datetime) -> None:
+        previous = self.store.get_focus_bot_status(BOT_KEY)
+        account = current_paper_account(self.store)
+        self.store.update_focus_bot_status(
+            bot_key=BOT_KEY,
+            run_state="DISABLED",
+            signal_action=previous.signal_action if previous is not None else "WAIT",
+            signal_score=previous.signal_score if previous is not None else 50.0,
+            account_state=account.state,
+            message="Vom Benutzer ausgeschaltet · keine automatischen Orders",
+            heartbeat_at=now,
+        )
+
     def pause(self, now: datetime) -> None:
         previous = self.store.get_focus_bot_status(BOT_KEY)
         account = current_paper_account(self.store)
@@ -275,6 +292,9 @@ class FocusPaperWorker:
 
     def run_once(self, *, force: bool = False) -> WorkerCycle | None:
         now = self.clock()
+        if not self._bot_enabled():
+            self.record_disabled(now)
+            return None
         if not force and not session_is_active(now):
             self.pause(now)
             return None
@@ -333,7 +353,7 @@ class FocusPaperWorker:
                 self.record_error(exc, now)
                 delay = ACTIVE_POLL_SECONDS
             else:
-                delay = ACTIVE_POLL_SECONDS if cycle is not None else IDLE_POLL_SECONDS
+                delay = ACTIVE_POLL_SECONDS if cycle is not None or not self._bot_enabled() else IDLE_POLL_SECONDS
             stop_event.wait(delay)
 
 

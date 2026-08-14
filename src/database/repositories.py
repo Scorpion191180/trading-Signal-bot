@@ -521,7 +521,13 @@ class DataStore:
             session.flush()
             return order
 
-    def reset_portfolio(self, portfolio_id: int, initial_capital: float) -> None:
+    def reset_portfolio(
+        self,
+        portfolio_id: int,
+        initial_capital: float,
+        *,
+        active: bool | None = None,
+    ) -> None:
         if initial_capital <= 0:
             raise ValueError("Startkapital muss positiv sein.")
         with self.sessions.begin() as session:
@@ -533,6 +539,19 @@ class DataStore:
             session.execute(delete(VirtualPosition).where(VirtualPosition.portfolio_id == portfolio_id))
             portfolio.initial_capital = initial_capital
             portfolio.cash = initial_capital
+            if active is not None:
+                portfolio.active = bool(active)
+
+    def set_portfolio_active(self, portfolio_id: int, active: bool) -> VirtualPortfolio:
+        """Schaltet automatische Orders eines virtuellen Depots dauerhaft an oder aus."""
+
+        with self.sessions.begin() as session:
+            portfolio = session.get(VirtualPortfolio, portfolio_id)
+            if portfolio is None:
+                raise PortfolioError("Virtuelles Depot nicht gefunden.")
+            portfolio.active = bool(active)
+            session.flush()
+            return portfolio
 
     def list_trades(self, portfolio_id: int | None = None) -> list[Trade]:
         with self.sessions() as session:

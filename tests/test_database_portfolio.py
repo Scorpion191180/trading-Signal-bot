@@ -240,10 +240,12 @@ def test_duplicate_symbol_and_reset_are_safe(store):
     store.open_position(**arguments)
     with pytest.raises(PortfolioError, match="Nachkauf"):
         store.open_position(**arguments)
-    store.reset_portfolio(portfolio.id, 12_000)
+    store.set_portfolio_active(portfolio.id, True)
+    store.reset_portfolio(portfolio.id, 12_000, active=False)
     assert store.list_positions(portfolio.id) == []
     refreshed = store.get_portfolio(portfolio.id)
     assert refreshed.cash == refreshed.initial_capital == 12_000
+    assert refreshed.active is False
 
 
 def test_daily_loss_limit_blocks_new_virtual_trades(store):

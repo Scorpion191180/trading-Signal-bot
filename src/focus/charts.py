@@ -354,7 +354,7 @@ def day_signal_chart(
             {"bounds": ["sat", "mon"]},
         ]
     figure.update_layout(
-        height=690,
+        height=525,
         margin={"l": 10, "r": 54, "t": 10, "b": 12},
         xaxis_rangeslider_visible=False,
         xaxis=xaxis,

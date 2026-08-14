@@ -23,8 +23,9 @@ st.markdown(
     <style>
     :root {color-scheme: dark;}
     html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {background: #12191c;}
-    [data-testid="stHeader"] {background: rgba(18,25,28,.92); height: 2.2rem;}
-    .block-container {padding: .15rem .8rem 1.2rem; max-width: none;}
+    [data-testid="stHeader"] {background: rgba(18,25,28,.92); height: .4rem;}
+    [data-testid="stToolbar"] {display: none;}
+    .block-container {padding: .08rem .55rem .25rem; max-width: none;}
     [data-testid="stSidebar"] {display: none;}
     .market-strip {
       display: flex; align-items: center; gap: 0; overflow-x: auto; white-space: nowrap;
@@ -58,6 +59,25 @@ st.markdown(
     .paper-account-bar b {color: #f1f5f6; letter-spacing: .025em;}
     .paper-account-bar span {padding-left: .65rem; border-left: 1px solid #344147;}
     .paper-account-bar small {margin-left: auto; color: #77878d; font-size: .59rem;}
+    .bot-console {
+      display: grid; grid-template-columns: repeat(8, max-content); align-items: center;
+      gap: .34rem .75rem; margin: .05rem 0 .12rem; padding: .3rem .5rem;
+      border: 1px solid #334147; border-radius: .3rem; background: #10181b;
+      color: #d8e0e3; font-size: .68rem; overflow-x: auto; scrollbar-width: none;
+    }
+    .bot-console span {white-space: nowrap;}
+    .bot-console small {color: #75858b; font-size: .52rem; letter-spacing: .055em; margin-right: .18rem;}
+    .bot-console b {color: #eef3f4; font-weight: 680;}
+    .bot-service {font-weight: 750; letter-spacing: .035em;}
+    .st-key-bot_controls {margin-bottom: .1rem;}
+    .st-key-bot_controls button, .st-key-bot_controls [data-testid="stPopoverButton"] {
+      min-height: 2rem !important; height: 2rem !important; padding: .12rem .45rem !important;
+      font-size: .69rem !important;
+    }
+    .st-key-bot_controls button p, .st-key-bot_controls [data-testid="stPopoverButton"] p {
+      font-size: .69rem !important;
+    }
+    .st-key-chart_toolbar {margin: 0 0 .08rem;}
     .trend-forecast-bar {
       display: flex; align-items: center; gap: .75rem; padding: .3rem .55rem; margin: .2rem 0;
       border: 1px solid #2d3a3f; border-radius: .4rem; background: #11191d; font-size: .68rem;
@@ -98,16 +118,43 @@ st.markdown(
     .modebar {top: 6px !important; right: 4px !important;}
     .modebar-btn path {fill: #a7b3b8 !important;}
     @media (max-width: 760px) {
-      .block-container {padding-left: .35rem; padding-right: .35rem;}
-      .market-strip {margin-left: -.35rem; margin-right: -.35rem;}
+      [data-testid="stHeader"] {height: 0; min-height: 0;}
+      .block-container {padding: .08rem .18rem .12rem;}
+      .market-strip {margin-left: -.18rem; margin-right: -.18rem;}
       .instrument-header {gap: .7rem; flex-wrap: wrap;}
       .instrument-name {font-size: .95rem;}
       .live-price {font-size: .9rem;}
+      .bot-console {
+        grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .22rem .45rem;
+        padding: .28rem .38rem; font-size: .64rem; overflow: hidden;
+      }
+      .bot-console span {min-width: 0; overflow: hidden; text-overflow: ellipsis;}
+      .bot-console small {display: block; margin: 0 0 .02rem; font-size: .47rem;}
+      .bot-service, .bot-signal {grid-column: span 1;}
+      .st-key-bot_controls [data-testid="stHorizontalBlock"] {
+        display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;
+        gap: .28rem !important;
+      }
+      .st-key-bot_controls [data-testid="stColumn"] {
+        flex: 1 1 50% !important; width: 50% !important; min-width: 0 !important;
+      }
+      .st-key-chart_toolbar [data-testid="stHorizontalBlock"] {
+        display: grid !important; grid-template-columns: minmax(0, 1fr) 5.7rem 2.6rem !important;
+        gap: .22rem !important;
+      }
+      .st-key-chart_toolbar [data-testid="stColumn"] {
+        width: auto !important; min-width: 0 !important;
+      }
+      .st-key-chart_toolbar [data-testid="stButtonGroup"] {
+        overflow-x: auto !important; scrollbar-width: none; justify-content: flex-start !important;
+      }
+      .st-key-chart_toolbar [data-testid="stButtonGroup"] > div {flex-wrap: nowrap !important;}
+      [data-testid="stPlotlyChart"] {margin-top: -.08rem;}
       .paper-account-bar small {margin-left: 0; width: 100%;}
       .trend-forecast-bar {flex-wrap: wrap; gap: .4rem;}
       .trend-forecast-bar i {margin-left: 0;}
       .replay-summary-bar small {margin-left: 0; width: 100%;}
-      div[data-testid="stHorizontalBlock"] {gap: .4rem;}
+      div[data-testid="stHorizontalBlock"] {gap: .28rem;}
     }
     </style>
     """,
