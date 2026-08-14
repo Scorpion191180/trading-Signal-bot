@@ -11,7 +11,7 @@ from src.database import DataStore, create_database, create_session_factory
 from src.focus.page import focus_page
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "1.1-background-paper-bot"
+SERVICE_SCHEMA_VERSION = "1.2-mobile-bot-controls"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
