@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from src.focus.analysis import FocusPosition
-from src.focus.page import _signal_mode_text
+from src.focus.page import _local_trade_time, _signal_mode_text
 from src.focus.quote import LiveQuote
 
 
@@ -35,3 +35,9 @@ def test_signal_mode_is_independent_of_private_position():
     assert "KAUFEN/VERKAUFEN" in explanation
     assert "unabhängig" in explanation
     assert "-16.7 %" in explanation
+
+
+def test_trade_times_are_shown_in_berlin_time():
+    local = _local_trade_time(datetime(2026, 8, 13, 13, 30, tzinfo=UTC))
+
+    assert local.strftime("%H:%M") == "15:30"

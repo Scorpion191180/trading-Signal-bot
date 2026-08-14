@@ -336,6 +336,104 @@ def _signal_mode_text(position: FocusPosition, quote: LiveQuote) -> str:
     )
 
 
+def _local_trade_time(value: datetime) -> datetime:
+    aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return aware.astimezone(ZoneInfo("Europe/Berlin"))
+
+
+@st.dialog("Bot-Position und Trades", width="large")
+def _render_trade_history_dialog(
+    store: DataStore,
+    account: PaperAccount,
+    quote: LiveQuote,
+) -> None:
+    orders = store.list_orders(account.portfolio_id, limit=200)
+    trades = store.list_trades(account.portfolio_id)
+    open_buy = next((order for order in orders if order.side == "BUY"), None)
+    invested = (
+        open_buy.gross_value + open_buy.fees
+        if account.quantity > 0 and open_buy is not None
+        else (account.average_price or 0.0) * account.quantity
+    )
+    open_value = account.quantity * quote.bid
+    open_result = open_value - invested
+    open_color = "#58c981" if open_result >= 0 else "#e06469"
+    position_label = (
+        f"{account.quantity:.3f} Stück zu {account.average_price:.3f} €"
+        if account.quantity > 0 and account.average_price is not None
+        else "Der Bot ist aktuell nicht investiert"
+    )
+    st.markdown(
+        '<div class="trade-overview">'
+        f'<span><small>STARTVERMÖGEN</small><b>{account.initial_capital:.2f} €</b></span>'
+        f'<span><small>DEPOTWERT</small><b>{account.equity:.2f} €</b></span>'
+        f'<span><small>AKTUELL INVESTIERT</small><b>{invested:.2f} €</b></span>'
+        f'<span><small>POSITIONSWERT</small><b>{open_value:.2f} €</b></span>'
+        f'<span><small>OFFENES ERGEBNIS</small><b style="color:{open_color}">'
+        f'{open_result:+.2f} €</b></span>'
+        f'<span><small>KOSTEN BISHER</small><b>{account.total_transaction_costs:.2f} €</b></span>'
+        '</div>'
+        f'<div class="trade-position-line">{position_label}</div>',
+        unsafe_allow_html=True,
+    )
+    trades_tab, orders_tab = st.tabs(("Abgeschlossene Trades", "Alle Orders"))
+    with trades_tab:
+        if not trades:
+            st.info("Noch kein abgeschlossener Trade. Eine offene Position steht oben im Fenster.")
+        for number, trade in enumerate(trades, start=1):
+            entry_at = _local_trade_time(trade.entry_time)
+            exit_at = _local_trade_time(trade.exit_time)
+            held_minutes = max(int((exit_at - entry_at).total_seconds() // 60), 0)
+            result_color = "#58c981" if trade.pnl_eur >= 0 else "#e06469"
+            purchase_value = trade.entry_price * trade.quantity
+            st.markdown(
+                '<div class="trade-card">'
+                '<div class="trade-card-head">'
+                f'<b>Trade #{number}</b>'
+                f'<strong style="color:{result_color}">{trade.pnl_eur:+.2f} € '
+                f'({trade.pnl_pct:+.2f} %)</strong>'
+                '</div><div class="trade-grid">'
+                f'<span><small>EINSTIEG</small><b>{entry_at:%d.%m. · %H:%M}</b>'
+                f'<em>{trade.entry_price:.3f} €</em></span>'
+                f'<span><small>AUSSTIEG</small><b>{exit_at:%d.%m. · %H:%M}</b>'
+                f'<em>{trade.exit_price:.3f} €</em></span>'
+                f'<span><small>STÜCK</small><b>{trade.quantity:.3f}</b></span>'
+                f'<span><small>KAUFWERT</small><b>{purchase_value:.2f} €</b></span>'
+                f'<span><small>DAUER</small><b>{held_minutes} Min</b></span>'
+                f'<span><small>GEBÜHREN</small><b>{trade.fees:.2f} €</b></span>'
+                '</div>'
+                f'<p><b>Einstieg:</b> {escape(trade.entry_reason)}<br>'
+                f'<b>Ausstieg:</b> {escape(trade.exit_reason)}</p>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+    with orders_tab:
+        if not orders:
+            st.info("Der Bot hat noch keine Order ausgeführt.")
+        for order in orders:
+            executed_at = _local_trade_time(order.executed_at)
+            side_label = "KAUF" if order.side == "BUY" else "VERKAUF"
+            side_color = "#58c981" if order.side == "BUY" else "#e06469"
+            st.markdown(
+                '<div class="trade-card">'
+                '<div class="trade-card-head">'
+                f'<b style="color:{side_color}">{side_label}</b>'
+                f'<span>{executed_at:%d.%m.%Y · %H:%M}</span>'
+                '</div><div class="trade-grid">'
+                f'<span><small>STÜCK</small><b>{order.quantity:.3f}</b></span>'
+                f'<span><small>AUSFÜHRUNG</small><b>{order.execution_price:.3f} €</b></span>'
+                f'<span><small>ORDERWERT</small><b>{order.gross_value:.2f} €</b></span>'
+                f'<span><small>GEBÜHR</small><b>{order.fees:.2f} €</b></span>'
+                f'<span><small>SPREAD</small><b>{order.spread_cost:.2f} €</b></span>'
+                f'<span><small>PUFFER</small><b>{order.slippage_cost:.2f} €</b></span>'
+                '</div>'
+                f'<p>{escape(order.reason)}</p>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+
 def _render_paper_account(
     store: DataStore,
     account: PaperAccount,
@@ -394,8 +492,8 @@ def _render_paper_account(
         unsafe_allow_html=True,
     )
     with st.container(key="bot_controls"):
-        toggle_column, reset_column = st.columns(2, gap="small")
-        toggle_label = "Bot ausschalten" if bot_enabled else "Bot einschalten"
+        toggle_column, trades_column, reset_column = st.columns(3, gap="small")
+        toggle_label = "Bot stoppen" if bot_enabled else "Bot starten"
         toggle_icon = ":material/pause:" if bot_enabled else ":material/play_arrow:"
         if toggle_column.button(
             toggle_label,
@@ -420,8 +518,15 @@ def _render_paper_account(
                 heartbeat_at=datetime.now(UTC),
             )
             st.rerun()
+        if trades_column.button(
+            "Trades",
+            icon=":material/receipt_long:",
+            width="stretch",
+            key="dwave_open_trades",
+        ):
+            _render_trade_history_dialog(store, account, quote)
         with reset_column.popover(
-            "Vermögen / Reset",
+            "Kapital / Reset",
             icon=":material/account_balance_wallet:",
             width="stretch",
         ):

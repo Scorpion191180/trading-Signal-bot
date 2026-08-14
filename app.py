@@ -78,6 +78,25 @@ st.markdown(
       font-size: .69rem !important;
     }
     .st-key-chart_toolbar {margin: 0 0 .08rem;}
+    .trade-overview {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem;
+      padding: .35rem; border: 1px solid #334147; border-radius: .35rem; background: #10181b;
+    }
+    .trade-overview span, .trade-grid span {display: flex; flex-direction: column; min-width: 0;}
+    .trade-overview small, .trade-grid small {
+      color: #75858b; font-size: .52rem; letter-spacing: .055em;
+    }
+    .trade-overview b, .trade-grid b {color: #eef3f4; font-size: .72rem;}
+    .trade-position-line {padding: .25rem .4rem; color: #9cabb0; font-size: .64rem;}
+    .trade-card {
+      margin: .35rem 0; padding: .45rem; border: 1px solid #2f3b40;
+      border-radius: .35rem; background: #10171a;
+    }
+    .trade-card-head {display: flex; justify-content: space-between; gap: .5rem; font-size: .72rem;}
+    .trade-card-head span {color: #8c9aa0;}
+    .trade-grid {display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem; margin-top: .4rem;}
+    .trade-grid em {color: #8e9da3; font-size: .61rem; font-style: normal;}
+    .trade-card p {margin: .4rem 0 0; color: #93a1a6; font-size: .61rem; line-height: 1.35;}
     .trend-forecast-bar {
       display: flex; align-items: center; gap: .75rem; padding: .3rem .55rem; margin: .2rem 0;
       border: 1px solid #2d3a3f; border-radius: .4rem; background: #11191d; font-size: .68rem;
@@ -136,8 +155,13 @@ st.markdown(
         gap: .28rem !important;
       }
       .st-key-bot_controls [data-testid="stColumn"] {
-        flex: 1 1 50% !important; width: 50% !important; min-width: 0 !important;
+        flex: 1 1 33.333% !important; width: 33.333% !important; min-width: 0 !important;
       }
+      .st-key-bot_controls button, .st-key-bot_controls [data-testid="stPopoverButton"] {
+        padding-left: .14rem !important; padding-right: .14rem !important;
+      }
+      .trade-overview, .trade-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
+      div[role="dialog"] {width: calc(100vw - .5rem) !important; max-width: none !important;}
       .st-key-chart_toolbar [data-testid="stHorizontalBlock"] {
         display: grid !important; grid-template-columns: minmax(0, 1fr) 5.7rem 2.6rem !important;
         gap: .22rem !important;
