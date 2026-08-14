@@ -12,7 +12,12 @@ import pandas as pd
 from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
 
-from .analysis import DWAVE_INSTRUMENT, analyze_timeframes, build_market_signal
+from .analysis import (
+    DWAVE_INSTRUMENT,
+    US_OPENING_REVERSAL_EVENT,
+    analyze_timeframes,
+    build_market_signal,
+)
 from .data import resample_ohlcv
 from .paper import PAPER_STARTING_CAPITAL, current_paper_account, run_paper_account
 from .quote import LiveQuote, resample_intraday_candles
@@ -131,7 +136,7 @@ def replay_focus_day(
     selected_date: date | None = None,
     confirmation_observations: int = 2,
 ) -> FocusReplayResult:
-    """Spielt v2 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
+    """Spielt v3 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
 
     if confirmation_observations < 1:
         raise ValueError("Die Zahl der Bestätigungsbeobachtungen muss positiv sein.")
@@ -218,12 +223,17 @@ def replay_focus_day(
             else:
                 confirmation_cycles += 1
             had_position = account.quantity > 0
+            required_confirmations = (
+                1
+                if signal.structure_event == US_OPENING_REVERSAL_EVENT
+                else confirmation_observations
+            )
             account = run_paper_account(
                 store,
                 quote,
                 signal,
                 signal_at=signal_at,
-                entry_confirmed=confirmation_cycles >= confirmation_observations,
+                entry_confirmed=confirmation_cycles >= required_confirmations,
             )
             if signal.action == "BUY" and not had_position and account.quantity <= 0:
                 rejected_entries[account.state] += 1

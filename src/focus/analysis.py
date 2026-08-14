@@ -53,6 +53,9 @@ TIMEFRAME_SPECS = (
     TimeframeSpec("1mo", "Monatschart", 6, 18, 100),
 )
 SPEC_BY_KEY = {spec.key: spec for spec in TIMEFRAME_SPECS}
+BERLIN = ZoneInfo("Europe/Berlin")
+NEW_YORK = ZoneInfo("America/New_York")
+US_OPENING_REVERSAL_EVENT = "US-Eröffnung: Abverkauf und Rückeroberung des vorherigen Tiefs"
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,19 @@ class SmartMoneyContext:
     liquidity_low: float | None
     liquidity_high: float | None
     event: str
+
+
+@dataclass(frozen=True)
+class OpeningReversal:
+    """Zeitlich begrenztes Reversal nach einem Sell-Side-Sweep zur US-Eröffnung."""
+
+    active: bool = False
+    event_at: datetime | None = None
+    event_low: float | None = None
+    reclaimed_level: float | None = None
+    stop_loss: float | None = None
+    target: float | None = None
+    event: str = "Kein bestätigtes US-Eröffnungs-Reversal"
 
 
 def _rolling_linear_regression(series: pd.Series, length: int = 11) -> pd.Series:
@@ -344,6 +360,92 @@ def _smart_money_context(frame: pd.DataFrame) -> SmartMoneyContext:
     )
 
 
+def _us_opening_reversal(
+    frame: pd.DataFrame,
+    now: datetime,
+    spread_percent: float | None,
+) -> OpeningReversal:
+    """Erkennt einen Abverkauf mit sofortiger Rückeroberung rund um 09:30 New York.
+
+    Die Uhrzeit wird aus der New-York-Zeitzone abgeleitet, damit die zwei Wochen mit
+    abweichender Sommerzeit zwischen Europa und den USA korrekt behandelt werden.
+    Nur abgeschlossene beziehungsweise aktuell beobachtete Kerzen bis ``now`` werden
+    ausgewertet; spätere Tagesdaten fließen nicht ein.
+    """
+
+    if frame.empty or len(frame) < 32 or (spread_percent is not None and spread_percent > 0.45):
+        return OpeningReversal()
+
+    current_time = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    current_time = current_time.astimezone(UTC)
+    new_york_date = current_time.astimezone(NEW_YORK).date()
+    us_open = datetime.combine(new_york_date, time(9, 30), tzinfo=NEW_YORK).astimezone(UTC)
+    if not us_open <= current_time <= us_open + timedelta(minutes=8):
+        return OpeningReversal()
+
+    data = frame.copy()
+    index = pd.DatetimeIndex(data.index)
+    index = index.tz_localize(UTC) if index.tz is None else index.tz_convert(UTC)
+    data.index = index
+    data = data.loc[data.index <= pd.Timestamp(current_time)]
+    candidate_window = data.loc[
+        (data.index >= pd.Timestamp(us_open))
+        & (data.index <= pd.Timestamp(us_open + timedelta(minutes=2)))
+    ]
+    if candidate_window.empty:
+        return OpeningReversal()
+
+    latest = data.iloc[-1]
+    latest_close = float(latest["close"])
+    latest_low = float(latest["low"])
+    for candidate_at, candidate in reversed(list(candidate_window.iterrows())):
+        prior = data.loc[data.index < candidate_at].tail(30)
+        if len(prior) < 20:
+            continue
+        prior_high = float(prior["high"].max())
+        prior_low = float(prior["low"].min())
+        candle_open = float(candidate["open"])
+        candle_high = float(candidate["high"])
+        candle_low = float(candidate["low"])
+        candle_close = float(candidate["close"])
+        candle_range = candle_high - candle_low
+        candidate_atr = float(candidate.get("atr_14", np.nan))
+        if not np.isfinite(candidate_atr) or candidate_atr <= 0:
+            candidate_atr = max(candle_range, candle_close * 0.002)
+        drop_from_prior_high = (prior_high - candle_low) / prior_high if prior_high > 0 else 0.0
+        swept_distance = prior_low - candle_low
+        close_position = (candle_close - candle_low) / candle_range if candle_range > 0 else 0.0
+        reclaimed = (
+            drop_from_prior_high >= 0.012
+            and swept_distance >= max(candidate_atr * 0.05, prior_low * 0.0002)
+            and candle_close > prior_low
+            and candle_close - candle_open >= candidate_atr * 0.25
+            and close_position >= 0.70
+        )
+        still_valid = (
+            latest_close >= candle_close
+            and latest_low >= candle_low
+            and latest_close <= candle_close + candidate_atr * 4.0
+        )
+        if not reclaimed or not still_valid:
+            continue
+
+        stop_loss = prior_low - candidate_atr * 0.12
+        risk_distance = candle_close - stop_loss
+        if risk_distance <= 0:
+            continue
+        return OpeningReversal(
+            active=True,
+            event_at=pd.Timestamp(candidate_at).to_pydatetime(),
+            event_low=candle_low,
+            reclaimed_level=prior_low,
+            stop_loss=stop_loss,
+            target=candle_close + risk_distance * 3.0,
+            event=US_OPENING_REVERSAL_EVENT,
+        )
+    return OpeningReversal()
+
+
 def _momentum_factor(current_rsi: float, macd_hist: float, previous_hist: float) -> float:
     if 52 <= current_rsi <= 68:
         rsi_factor = 1.0
@@ -461,7 +563,7 @@ def analyze_timeframes(
 
 
 def _is_german_market_open(now: datetime, session_close: time) -> bool:
-    berlin = now.astimezone(ZoneInfo("Europe/Berlin"))
+    berlin = now.astimezone(BERLIN)
     return berlin.weekday() < 5 and time(7, 30) <= berlin.time().replace(tzinfo=None) <= session_close
 
 
@@ -869,6 +971,14 @@ def build_intraday_signal(
         <= max(five_atr * 1.2, price * 0.002)
     )
     smart_money = _smart_money_context(enriched["5m"])
+    opening_reversal = _us_opening_reversal(enriched["1m"], current_time, spread_percent)
+    opening_context_ok = analyses["1h"].score >= 25 and analyses["1d"].score >= 25
+    opening_trigger = opening_reversal.active and opening_context_ok and not liquidity_veto
+    if opening_trigger and opening_reversal.stop_loss is not None and opening_reversal.target is not None:
+        stop_loss = opening_reversal.stop_loss
+        target = opening_reversal.target
+        entry_low = price - 0.05 * one_minute_atr
+        entry_high = price + 0.10 * one_minute_atr
     setup_confirmation = (
         analyses["1m"].setup in {"Ausbruch", "Trend-Rücksetzer"}
         or smart_money.bullish_reversal
@@ -890,6 +1000,12 @@ def build_intraday_signal(
     context_veto = analyses["1h"].score < 38 or analyses["1d"].score < 35
     bearish_exit = analyses["1m"].score <= 38 and analyses["5m"].score <= 42
     reasons = (
+        (
+            "US-Eröffnung bestätigt: starker Abverkauf · vorheriges Tief geholt · "
+            "bullisch zurückerobert"
+            if opening_reversal.active
+            else "US-Eröffnung: kein bestätigter Sell-Side-Sweep mit Rückeroberung"
+        ),
         f"Marktphase {forecast.regime}: " + " · ".join(forecast.votes),
         f"1 Minute {analyses['1m'].score:.0f} · 5 Minuten {analyses['5m'].score:.0f} · "
         f"15 Minuten {analyses['15m'].score:.0f}",
@@ -915,7 +1031,14 @@ def build_intraday_signal(
     if liquidity_veto:
         warning = "Kein Einstieg: Der Geld-/Brief-Spread ist für einen 5–30-Minuten-Trade zu groß."
     if position.invested:
-        if bearish_exit or score <= 38:
+        if opening_trigger:
+            if position.average_price is not None and price >= position.average_price:
+                action, headline, color = "ADD", "NACHKAUFEN – US-Eröffnungs-Reversal bestätigt", "#22c55e"
+                warning = "Der Abverkauf wurde zurückerobert; Stop und Kostenhürde bleiben verbindlich."
+            else:
+                action, headline, color = "HOLD", "HALTEN – US-Eröffnungs-Reversal bestätigt", "#38bdf8"
+                warning = "Das Reversal spricht gegen einen Verkauf am Tief, aber nicht für Verbilligen."
+        elif bearish_exit or score <= 38:
             action, headline, color = "SELL", "VERKAUFEN – kurzfristiger Trend kippt", "#ef4444"
             warning = "Signal bezieht sich auf den kurzfristigen Trade; Ausführung und Spread selbst prüfen."
         elif short_trigger and not context_veto and score >= 64:
@@ -928,6 +1051,9 @@ def build_intraday_signal(
         else:
             action, headline, color = "HOLD", "HALTEN / BEOBACHTEN", "#38bdf8"
             warning = "Stop beachten; ohne neue 1- und 5-Minuten-Bestätigung nicht aufstocken."
+    elif opening_trigger:
+        action, headline, color = "BUY", "KAUFEN – bestätigtes US-Eröffnungs-Reversal", "#22c55e"
+        warning = "Nur nach Rückeroberung; der Stop liegt knapp unter dem zurückgewonnenen Tief."
     elif short_trigger and not context_veto and score >= 64:
         action, headline, color = "BUY", "KAUFEN – kurzfristiges technisches Signal", "#22c55e"
         warning = "Nur für etwa 5–30 Minuten; bei Unterschreiten des Stops ist das Setup ungültig."
@@ -961,7 +1087,7 @@ def build_intraday_signal(
         demand_high=smart_money.demand_high,
         liquidity_low=smart_money.liquidity_low,
         liquidity_high=smart_money.liquidity_high,
-        structure_event=smart_money.event,
+        structure_event=opening_reversal.event if opening_reversal.active else smart_money.event,
     )
 
 
@@ -978,6 +1104,8 @@ def build_market_signal(
         FocusPosition(),
         **signal_options,
     )
+    if entry_signal.action == "BUY" and entry_signal.structure_event == US_OPENING_REVERSAL_EVENT:
+        return entry_signal
     exit_signal = build_intraday_signal(
         analyses,
         enriched,

@@ -8,9 +8,11 @@ import pandas as pd
 from src.data import MarketDataRequest
 from src.focus.analysis import (
     SPEC_BY_KEY,
+    US_OPENING_REVERSAL_EVENT,
     FocusPosition,
     _rolling_linear_regression,
     _smart_money_context,
+    _us_opening_reversal,
     add_focus_indicators,
     analyze_timeframes,
     build_intraday_signal,
@@ -69,6 +71,55 @@ def test_liquidity_sweep_then_displacement_confirms_bullish_structure_change():
     assert context.demand_low is not None
     assert context.demand_high is not None
     assert "bullischer Strukturwechsel" in context.event
+
+
+def test_us_open_reversal_detects_selloff_sweep_and_reclaim():
+    index = pd.date_range("2026-08-14 12:50:00Z", periods=41, freq="1min")
+    close = np.linspace(18.08, 17.82, len(index))
+    open_ = np.concatenate(([close[0] + 0.01], close[:-1]))
+    high = np.maximum(open_, close) + 0.025
+    low = np.minimum(open_, close) - 0.025
+    open_[-1], high[-1], low[-1], close[-1] = 17.805, 17.900, 17.675, 17.900
+    frame = pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": 0.0},
+        index=index,
+    )
+    enriched = add_focus_indicators(frame, SPEC_BY_KEY["1m"])
+
+    reversal = _us_opening_reversal(
+        enriched,
+        datetime(2026, 8, 14, 13, 31, tzinfo=UTC),
+        spread_percent=0.20,
+    )
+
+    assert reversal.active is True
+    assert reversal.event == US_OPENING_REVERSAL_EVENT
+    assert reversal.event_low == 17.675
+    assert reversal.stop_loss < reversal.reclaimed_level < 17.900
+    assert reversal.target > 18.20
+
+
+def test_us_open_reversal_is_not_a_blind_timed_entry():
+    index = pd.date_range("2026-08-14 12:50:00Z", periods=41, freq="1min")
+    close = np.linspace(18.00, 18.10, len(index))
+    frame = pd.DataFrame(
+        {
+            "open": close - 0.005,
+            "high": close + 0.02,
+            "low": close - 0.02,
+            "close": close,
+            "volume": 0.0,
+        },
+        index=index,
+    )
+
+    reversal = _us_opening_reversal(
+        add_focus_indicators(frame, SPEC_BY_KEY["1m"]),
+        datetime(2026, 8, 14, 13, 31, tzinfo=UTC),
+        spread_percent=0.20,
+    )
+
+    assert reversal.active is False
 
 
 def _frames(now: datetime, *, bearish: bool = False) -> dict[str, pd.DataFrame]:

@@ -5,7 +5,7 @@ from datetime import UTC
 import pandas as pd
 import pytest
 
-from src.focus.analysis import IntradaySignal
+from src.focus.analysis import US_OPENING_REVERSAL_EVENT, IntradaySignal
 from src.focus.replay import replay_focus_day
 
 
@@ -23,7 +23,7 @@ def _candles() -> pd.DataFrame:
     )
 
 
-def _buy_signal() -> IntradaySignal:
+def _buy_signal(*, opening_reversal: bool = False) -> IntradaySignal:
     return IntradaySignal(
         action="BUY",
         headline="Testkauf",
@@ -40,6 +40,7 @@ def _buy_signal() -> IntradaySignal:
         warning="",
         data_age_minutes=0.0,
         market_open=True,
+        structure_event=US_OPENING_REVERSAL_EVENT if opening_reversal else "",
     )
 
 
@@ -83,3 +84,28 @@ def test_replay_requires_positive_confirmation_count():
             daily=candles,
             confirmation_observations=0,
         )
+
+
+def test_replay_uses_closed_minute_as_proxy_for_live_opening_confirmation(monkeypatch):
+    bid = _candles()
+    ask = bid.copy()
+    for column in ("open", "high", "low", "close"):
+        ask[column] += 0.02
+    monkeypatch.setattr("src.focus.replay.analyze_timeframes", lambda _frames: ({}, {}, {}))
+    monkeypatch.setattr(
+        "src.focus.replay.build_market_signal",
+        lambda *_args, **_kwargs: _buy_signal(opening_reversal=True),
+    )
+
+    result = replay_focus_day(
+        bid_minutes=bid,
+        ask_minutes=ask,
+        five_minutes=bid,
+        hourly=bid,
+        daily=bid,
+        confirmation_observations=2,
+    )
+
+    assert result.completed_trades == 1
+    assert result.orders[0].side == "BUY"
+    assert "US-Eröffnungs-Reversal" in result.orders[0].reason
