@@ -141,12 +141,17 @@ class FocusPaperWorker:
         minute = _latest_trading_day(self._history(60), quote)
         signal_at = quote.quoted_at or quote.fetched_at
         five_minutes = _completed_candles(self._history(300), 300, signal_at)
-        hourly = self._history(3600)
-        daily = self._history(86400)
+        fifteen_minutes = _completed_candles(
+            resample_intraday_candles(five_minutes, 15),
+            900,
+            signal_at,
+        )
+        hourly = _completed_candles(self._history(3600), 3600, signal_at)
+        daily = _completed_candles(self._history(86400), 86400, signal_at)
         frames = {
             "1m": minute,
             "5m": five_minutes,
-            "15m": resample_intraday_candles(five_minutes, 15),
+            "15m": fifteen_minutes,
             "1h": hourly,
             "1d": daily,
             "1wk": resample_ohlcv(daily, "W-FRI", drop_future_label=True),

@@ -68,6 +68,15 @@ st.markdown(
     .trend-forecast-cell em {font-style: normal; font-weight: 700; white-space: nowrap;}
     .trend-forecast-cell small {color: #78878d; white-space: nowrap;}
     .trend-forecast-bar i {margin-left: auto; color: #69777d; font-size: .56rem; white-space: nowrap;}
+    .replay-summary-bar {
+      display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; margin: .12rem 0;
+      padding: .24rem .5rem; border: 1px solid #334147; border-radius: .3rem;
+      background: #10181b; color: #aebbc0; font-size: .64rem;
+    }
+    .replay-summary-bar label {color: #829198; font-size: .58rem; letter-spacing: .06em;}
+    .replay-summary-bar b, .replay-summary-bar strong {color: #eef2f3;}
+    .replay-summary-bar span {padding-left: .65rem; border-left: 1px solid #344147;}
+    .replay-summary-bar small {margin-left: auto; color: #77878d; font-size: .58rem;}
     [data-testid="stButtonGroup"] button {
       min-height: 1.5rem !important; height: 1.5rem !important; border-radius: .28rem !important;
       padding: .05rem .32rem !important; font-size: .61rem !important; white-space: nowrap !important;
@@ -97,6 +106,7 @@ st.markdown(
       .paper-account-bar small {margin-left: 0; width: 100%;}
       .trend-forecast-bar {flex-wrap: wrap; gap: .4rem;}
       .trend-forecast-bar i {margin-left: 0;}
+      .replay-summary-bar small {margin-left: 0; width: 100%;}
       div[data-testid="stHorizontalBlock"] {gap: .4rem;}
     }
     </style>

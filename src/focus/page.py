@@ -35,6 +35,7 @@ from .quote import (
     market_day_candles,
     resample_intraday_candles,
 )
+from .replay import replay_focus_day
 from .stock3 import Stock3LangSchwarzProvider
 
 
@@ -64,6 +65,21 @@ def _cached_stock3_quote() -> dict[str, object]:
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_stock3_history(resolution_seconds: int) -> pd.DataFrame:
     return Stock3LangSchwarzProvider().history(resolution_seconds)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_today_replay() -> dict[str, object]:
+    """Berechnet den v2-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
+
+    provider = Stock3LangSchwarzProvider()
+    result = replay_focus_day(
+        bid_minutes=provider.history(60),
+        ask_minutes=provider.history(60, quote_type="ask"),
+        five_minutes=provider.history(300),
+        hourly=provider.history(3600),
+        daily=provider.history(86400),
+    )
+    return asdict(result)
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -464,6 +480,25 @@ def _render_trend_forecast(signal: IntradaySignal) -> None:
     )
 
 
+def _render_replay_summary(summary: dict[str, object]) -> None:
+    pnl = float(summary["pnl_eur"])
+    color = "#58c981" if pnl > 0 else "#e06469" if pnl < 0 else "#94a3b8"
+    first_at = pd.Timestamp(summary["first_candle_at"]).tz_convert("Europe/Berlin")
+    last_at = pd.Timestamp(summary["last_candle_at"]).tz_convert("Europe/Berlin")
+    completed = int(summary["completed_trades"])
+    costs = float(summary["transaction_costs"])
+    note = "kein vollständiges v2-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
+    st.markdown(
+        '<div class="replay-summary-bar"><label>TAGES-REPLAY V2</label>'
+        f'<b>{first_at:%H:%M}–{last_at:%H:%M}</b>'
+        f'<strong style="color:{color}">{pnl:+.2f} € ({float(summary["pnl_percent"]):+.2f} %)</strong>'
+        f'<span>Depot {float(summary["ending_equity"]):.2f} €</span>'
+        f'<span>Kosten {costs:.2f} €</span><small>{note} · echte historische L&S-Bid/Ask-Minuten</small>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
 @st.fragment(run_every=10)
 def _automatic_day_chart(store: DataStore) -> None:
     try:
@@ -560,6 +595,17 @@ def _automatic_day_chart(store: DataStore) -> None:
                 key="dwave_chart_overlays",
                 width="stretch",
             )
+            if st.button(
+                "Heutigen v2-Replay berechnen",
+                icon=":material/history:",
+                key="dwave_run_today_replay",
+                width="stretch",
+            ):
+                with st.spinner("Tages-Replay ohne Blick in spätere Kerzen …"):
+                    st.session_state["dwave_today_replay"] = _cached_today_replay()
+    replay_summary = st.session_state.get("dwave_today_replay")
+    if isinstance(replay_summary, dict):
+        _render_replay_summary(replay_summary)
     selected_minutes = int(candle_minutes or DEFAULT_INTERVAL[period_label])
     try:
         display_candles = select_display_candles(

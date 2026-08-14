@@ -1,4 +1,4 @@
-"""Öffentliche L&S-Bid-Kurse des frei sichtbaren stock3-D-Wave-Charts."""
+"""Öffentliche L&S-Geld-/Briefkurse des frei sichtbaren stock3-D-Wave-Charts."""
 
 from __future__ import annotations
 
@@ -90,11 +90,18 @@ def parse_stock3_quote(payload: dict[str, Any], *, fetched_at: datetime) -> Live
     )
 
 
-def decode_stock3_candles(payload: dict[str, Any], resolution_seconds: int) -> pd.DataFrame:
-    """Dekodiert die öffentlich ausgelieferte, differenzkomprimierte L&S-Bid-Reihe."""
+def decode_stock3_candles(
+    payload: dict[str, Any],
+    resolution_seconds: int,
+    *,
+    quote_type: str = "bid",
+) -> pd.DataFrame:
+    """Dekodiert eine öffentlich ausgelieferte, differenzkomprimierte L&S-Reihe."""
 
     if resolution_seconds not in SUPPORTED_RESOLUTIONS:
         raise ValueError("Diese stock3-Auflösung wird nicht unterstützt.")
+    if quote_type not in {"bid", "ask"}:
+        raise ValueError("stock3 unterstützt hier nur Geld- oder Briefkurse.")
     data = payload.get("data")
     if not isinstance(data, dict):
         raise ProviderError("stock3 liefert keine L&S-Chartdaten.")
@@ -150,9 +157,10 @@ def decode_stock3_candles(payload: dict[str, Any], resolution_seconds: int) -> p
         or (frame["low"] > frame[["open", "close"]].min(axis=1)).any()
         or (frame[["open", "high", "low", "close"]] <= 0).any().any()
     ):
-        raise ProviderError("stock3 liefert unplausible L&S-Bid-Kerzen.")
-    frame.attrs["provider"] = "stock3 · L&S Bid"
-    frame.attrs["quote_type"] = "bid"
+        raise ProviderError("stock3 liefert unplausible L&S-Kerzen.")
+    label = "Bid" if quote_type == "bid" else "Ask"
+    frame.attrs["provider"] = f"stock3 · L&S {label}"
+    frame.attrs["quote_type"] = quote_type
     return frame
 
 
@@ -203,14 +211,16 @@ class Stock3LangSchwarzProvider:
         payload = self._read_json(url, label="Der öffentliche stock3-L&S-Kurs")
         return parse_stock3_quote(payload, fetched_at=self._clock())
 
-    def history(self, resolution_seconds: int) -> pd.DataFrame:
+    def history(self, resolution_seconds: int, *, quote_type: str = "bid") -> pd.DataFrame:
         if resolution_seconds not in SUPPORTED_RESOLUTIONS:
             raise ValueError("Diese stock3-Auflösung wird nicht unterstützt.")
+        if quote_type not in {"bid", "ask"}:
+            raise ValueError("stock3 unterstützt hier nur Geld- oder Briefkurse.")
         query = urlencode(
             {
                 "iid": STOCK3_INSTRUMENT_ID,
                 "res": resolution_seconds,
-                "qs": "bid",
+                "qs": quote_type,
                 "eid": LANG_SCHWARZ_EXCHANGE_ID,
                 "client_id": "stock3",
                 "locale": "de",
@@ -218,6 +228,6 @@ class Stock3LangSchwarzProvider:
         )
         payload = self._read_json(
             f"{self.chart_endpoint}?{query}",
-            label="Die öffentliche stock3-L&S-Bid-Historie",
+            label=f"Die öffentliche stock3-L&S-{quote_type.upper()}-Historie",
         )
-        return decode_stock3_candles(payload, resolution_seconds)
+        return decode_stock3_candles(payload, resolution_seconds, quote_type=quote_type)

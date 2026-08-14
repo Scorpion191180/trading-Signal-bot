@@ -93,6 +93,13 @@ def test_stock3_delta_history_decodes_ohlc_and_realtime_tail():
     assert candles.attrs["provider"] == "stock3 · L&S Bid"
 
 
+def test_stock3_ask_history_is_labelled_separately():
+    candles = decode_stock3_candles(_history_payload(), 60, quote_type="ask")
+
+    assert candles.attrs["provider"] == "stock3 · L&S Ask"
+    assert candles.attrs["quote_type"] == "ask"
+
+
 def test_stock3_provider_requests_bid_history_from_lang_schwarz():
     requested_urls: list[str] = []
 
@@ -112,6 +119,9 @@ def test_stock3_provider_requests_bid_history_from_lang_schwarz():
     assert "res=300" in requested_urls[1]
     assert "qs=bid" in requested_urls[1]
     assert "eid=22" in requested_urls[1]
+
+    assert len(provider.history(60, quote_type="ask")) == 3
+    assert "qs=ask" in requested_urls[2]
 
 
 def test_week_defaults_to_thirty_minute_candles():
