@@ -47,6 +47,10 @@ class WorkerCycle:
     account: PaperAccount
 
 
+class WorkerWarmup(RuntimeError):
+    """Die Quelle ist erreichbar, hat heute aber noch zu wenige Beobachtungen."""
+
+
 def session_is_active(now: datetime) -> bool:
     local = now.astimezone(BERLIN)
     local_time = local.time().replace(tzinfo=None)
@@ -60,7 +64,29 @@ def _latest_trading_day(frame: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
     if selected.empty:
         selected = frame.loc[local_index.date == local_index[-1].date()].copy()
     selected.attrs.update(frame.attrs)
-    return selected
+    if selected.empty:
+        return selected
+
+    quote_time = pd.Timestamp(quote.quoted_at or quote.fetched_at).floor("min")
+    start = selected.index[0].floor("min")
+    end = max(selected.index[-1].floor("min"), quote_time)
+    minute_index = pd.date_range(start, end, freq="1min", tz="UTC", name=selected.index.name)
+    completed = selected.reindex(minute_index)
+    completed["close"] = completed["close"].ffill()
+    for column in ("open", "high", "low"):
+        completed[column] = completed[column].fillna(completed["close"])
+    completed["volume"] = completed["volume"].fillna(0.0)
+    live_minute = quote_time if quote_time in completed.index else completed.index[-1]
+    previous_close = float(completed["close"].shift(1).loc[live_minute])
+    if pd.isna(previous_close):
+        previous_close = quote.bid
+    completed.loc[live_minute, "open"] = float(completed.loc[live_minute, "open"] or previous_close)
+    completed.loc[live_minute, "high"] = max(float(completed.loc[live_minute, "high"]), quote.bid)
+    completed.loc[live_minute, "low"] = min(float(completed.loc[live_minute, "low"]), quote.bid)
+    completed.loc[live_minute, "close"] = quote.bid
+    completed.attrs.update(selected.attrs)
+    completed.attrs["filled_unchanged_minutes"] = len(completed) - len(selected)
+    return completed
 
 
 class FocusPaperWorker:
@@ -162,6 +188,19 @@ class FocusPaperWorker:
             last_error=str(error),
         )
 
+    def record_warmup(self, message: str, now: datetime) -> None:
+        previous = self.store.get_focus_bot_status(BOT_KEY)
+        account = current_paper_account(self.store)
+        self.store.update_focus_bot_status(
+            bot_key=BOT_KEY,
+            run_state="WARMUP",
+            signal_action=previous.signal_action if previous is not None else "WAIT",
+            signal_score=previous.signal_score if previous is not None else 50.0,
+            account_state=account.state,
+            message=message,
+            heartbeat_at=now,
+        )
+
     def run_once(self, *, force: bool = False) -> WorkerCycle | None:
         now = self.clock()
         if not force and not session_is_active(now):
@@ -173,6 +212,8 @@ class FocusPaperWorker:
         analyses, enriched, errors = analyze_timeframes(frames)
         if errors:
             missing = "; ".join(errors.values())
+            if all("zu wenige abgeschlossene Kerzen" in message for message in errors.values()):
+                raise WorkerWarmup(f"Sicherer Datenaufbau: {missing}")
             raise RuntimeError(f"Multi-Timeframe-Analyse unvollständig: {missing}")
         signal = build_market_signal(
             analyses,
@@ -205,6 +246,9 @@ class FocusPaperWorker:
             now = self.clock()
             try:
                 cycle = self.run_once()
+            except WorkerWarmup as exc:
+                self.record_warmup(str(exc), now)
+                delay = ACTIVE_POLL_SECONDS
             except Exception as exc:
                 LOGGER.exception("Der D-Wave-Papier-Bot konnte den Zyklus nicht abschließen.")
                 self.record_error(exc, now)
@@ -246,6 +290,8 @@ def main() -> None:
     if args.once:
         try:
             worker.run_once(force=args.force)
+        except WorkerWarmup as exc:
+            worker.record_warmup(str(exc), worker.clock())
         except Exception as exc:
             worker.record_error(exc, worker.clock())
             raise

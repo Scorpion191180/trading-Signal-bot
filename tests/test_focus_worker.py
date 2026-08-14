@@ -8,7 +8,7 @@ import pandas as pd
 from src.focus.analysis import IntradaySignal
 from src.focus.paper import PAPER_PORTFOLIO_NAME
 from src.focus.quote import LiveQuote
-from src.focus.worker import FocusPaperWorker, session_is_active
+from src.focus.worker import FocusPaperWorker, _latest_trading_day, session_is_active
 
 
 class FakeStock3Provider:
@@ -90,6 +90,39 @@ def test_session_window_uses_berlin_time():
     assert session_is_active(datetime(2026, 8, 13, 21, 0, tzinfo=UTC))
     assert not session_is_active(datetime(2026, 8, 13, 21, 1, tzinfo=UTC))
     assert not session_is_active(datetime(2026, 8, 15, 12, 0, tzinfo=UTC))
+
+
+def test_sparse_bid_changes_become_continuous_minute_candles():
+    now = datetime(2026, 8, 14, 6, 7, tzinfo=UTC)
+    quote = FakeStock3Provider(now).quote()
+    index = pd.DatetimeIndex(
+        [
+            pd.Timestamp("2026-08-14 05:30:00Z"),
+            pd.Timestamp("2026-08-14 05:33:00Z"),
+            pd.Timestamp("2026-08-14 06:07:00Z"),
+        ],
+        name="timestamp",
+    )
+    sparse = pd.DataFrame(
+        {
+            "open": [17.9, 17.95, 18.0],
+            "high": [17.95, 18.0, 18.05],
+            "low": [17.88, 17.94, 17.98],
+            "close": [17.94, 17.99, 18.0],
+            "volume": [0.0, 0.0, 0.0],
+        },
+        index=index,
+    )
+    sparse.attrs["quote_type"] = "bid"
+
+    completed = _latest_trading_day(sparse, quote)
+
+    assert len(completed) == 38
+    assert completed.index[0] == index[0]
+    assert completed.index[-1] == index[-1]
+    assert completed.attrs["filled_unchanged_minutes"] == 35
+    assert completed.loc[pd.Timestamp("2026-08-14 05:31:00Z"), "close"] == 17.94
+    assert completed.iloc[-1]["close"] == quote.bid
 
 
 def test_worker_executes_paper_order_and_persists_heartbeat(store, monkeypatch):

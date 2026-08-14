@@ -326,6 +326,9 @@ def _render_paper_account(
         heartbeat_time = heartbeat.astimezone(ZoneInfo("Europe/Berlin"))
         if heartbeat_age <= 180 and bot_status.run_state == "ERROR":
             service_text = f"HINTERGRUND FEHLER · {heartbeat_time:%H:%M:%S}"
+        elif heartbeat_age <= 180 and bot_status.run_state == "WARMUP":
+            service_color = "#f59e0b"
+            service_text = f"HINTERGRUND AKTIV · DATENAUFBAU · {heartbeat_time:%H:%M:%S}"
         elif heartbeat_age <= 180:
             service_color = "#58c981"
             mode = "PAUSE" if bot_status.run_state == "PAUSED" else bot_status.signal_action
