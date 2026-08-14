@@ -26,7 +26,7 @@ PAPER_STARTING_CAPITAL = 2_000.0
 TRADE_REPUBLIC_ORDER_FEE = 1.0
 PAPER_SLIPPAGE_PCT = 0.0005
 PAPER_MAX_SPREAD_PERCENT = 0.6
-PAPER_STRATEGY_VERSION = "focus-market-v4"
+PAPER_STRATEGY_VERSION = "focus-market-v5"
 PAPER_MAX_CAPITAL_FRACTION = 0.50
 PAPER_RISK_PER_TRADE = 0.0075
 PAPER_MIN_NET_EDGE_PCT = 0.002
@@ -37,7 +37,8 @@ PAPER_DAILY_LOSS_LIMIT = 0.015
 PAPER_COOLDOWN_MINUTES = 15
 PAPER_STOP_COOLDOWN_MINUTES = 30
 PAPER_MIN_SIGNAL_EXIT_MINUTES = 5
-PAPER_MAX_HOLD_MINUTES = 30
+PAPER_TREND_REVIEW_MINUTES = 30
+PAPER_MAX_HOLD_MINUTES = 120
 BERLIN = ZoneInfo("Europe/Berlin")
 
 
@@ -173,6 +174,22 @@ def _entry_guard(store: DataStore, portfolio: VirtualPortfolio, signal_at: datet
     return None
 
 
+def _trend_supports_extended_hold(
+    signal: IntradaySignal,
+    position: VirtualPosition,
+    quote: LiveQuote,
+) -> bool:
+    """Verlängert nur profitable Positionen mit weiter positivem Trend und Kontext."""
+
+    return bool(
+        signal.action != "SELL"
+        and signal.forecast_direction in {"EHER STEIGEND", "STEIGEND"}
+        and signal.score >= 58
+        and signal.external_context_score >= 35
+        and quote.bid >= position.average_price
+    )
+
+
 def run_paper_account(
     store: DataStore,
     quote: LiveQuote,
@@ -258,8 +275,6 @@ def run_paper_account(
                 exit_reason = "Stop-Loss erreicht"
             elif quote.bid >= position.take_profit:
                 exit_reason = "Kostenbereinigtes technisches Ziel erreicht"
-            elif held_minutes >= PAPER_MAX_HOLD_MINUTES:
-                exit_reason = "Zeitlimit 30 Minuten erreicht"
             elif (
                 execution_allowed
                 and held_minutes >= PAPER_MIN_SIGNAL_EXIT_MINUTES
@@ -275,6 +290,14 @@ def run_paper_account(
                 and signal.score <= 38
             ):
                 exit_reason = "Bestätigtes VERKAUFEN · kurzfristiger Trend gekippt"
+            elif held_minutes >= PAPER_MAX_HOLD_MINUTES:
+                exit_reason = "Sicherheitszeitlimit 120 Minuten erreicht"
+            elif held_minutes >= PAPER_TREND_REVIEW_MINUTES and not _trend_supports_extended_hold(
+                signal,
+                position,
+                quote,
+            ):
+                exit_reason = "Adaptive Haltedauer · Trend nicht mehr ausreichend bestätigt"
             if exit_reason:
                 store.close_position(
                     portfolio_id=portfolio.id,

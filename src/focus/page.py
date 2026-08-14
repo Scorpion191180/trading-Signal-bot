@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import asdict
 from datetime import UTC, datetime, time
+from html import escape
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -15,8 +16,16 @@ from src.data import ProviderError, YFinanceMarketDataProvider
 from src.database import DataStore
 from src.database.models import FocusBotStatus
 
-from .analysis import DWAVE_INSTRUMENT, FocusPosition, IntradaySignal, analyze_timeframes, build_market_signal
+from .analysis import (
+    DWAVE_INSTRUMENT,
+    ExternalMarketContext,
+    FocusPosition,
+    IntradaySignal,
+    analyze_timeframes,
+    build_market_signal,
+)
 from .charts import day_signal_chart
+from .context import FocusContextProvider
 from .data import TimeframeBundle, load_dwave_timeframes
 from .display import (
     DEFAULT_INTERVAL,
@@ -69,7 +78,7 @@ def _cached_stock3_history(resolution_seconds: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_today_replay() -> dict[str, object]:
-    """Berechnet den v4-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
+    """Berechnet den v5-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
 
     provider = Stock3LangSchwarzProvider()
     result = replay_focus_day(
@@ -125,6 +134,12 @@ def _cached_market_strip() -> list[tuple[str, float, float]]:
         return items
     except Exception:
         return []
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_external_context() -> dict[str, object]:
+    context, _news_items = FocusContextProvider().snapshot()
+    return asdict(context)
 
 
 def _latest_trading_day(frame: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
@@ -383,7 +398,7 @@ def _render_paper_account(
 def _validation_text(metrics: dict[str, float | int | None]) -> str:
     recorded = int(metrics["recorded"] or 0)
     completed = int(metrics["completed"] or 0)
-    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der neuen Strategie v4"
+    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der neuen Strategie v5"
     if completed < 20:
         forecast_label = "Prognose" if recorded == 1 else "Prognosen"
         return (
@@ -472,6 +487,22 @@ def _render_trend_forecast(signal: IntradaySignal) -> None:
             f'Modellstärke {forecast.confidence:.0f} %</small>'
             '</span>'
         )
+    context_color = (
+        "#58c981"
+        if signal.external_context_score >= 58
+        else "#e06469"
+        if signal.external_context_score <= 42
+        else "#f59e0b"
+    )
+    context_reason = " · ".join(signal.external_context_reasons[:2]) or "neutraler Ersatzwert"
+    latest_headline = signal.latest_news[0] if signal.latest_news else "keine neue relevante Meldung"
+    cells.append(
+        '<span class="trend-forecast-cell">'
+        '<b>Markt & Nachrichten</b> '
+        f'<em style="color:{context_color}">{signal.external_context_score:.0f}/100</em> '
+        f'<small>{escape(context_reason)} · {escape(latest_headline[:100])}</small>'
+        '</span>'
+    )
     st.markdown(
         '<div class="trend-forecast-bar"><label>VORAUSSICHTLICHER TREND</label>'
         + "".join(cells)
@@ -488,7 +519,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
     completed = int(summary["completed_trades"])
     costs = float(summary["transaction_costs"])
     confirmations = int(summary["confirmation_observations"])
-    note = "kein vollständiges v4-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
+    note = "kein vollständiges v5-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
     orders = summary.get("orders", ())
     order_labels: list[str] = []
     if isinstance(orders, (list, tuple)):
@@ -511,7 +542,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
         ):
             note += " · 17:55-Musterkerze als Live-Bestätigungsproxy"
     st.markdown(
-        '<div class="replay-summary-bar"><label>TAGES-REPLAY V4</label>'
+        '<div class="replay-summary-bar"><label>TAGES-REPLAY V5</label>'
         f'<b>{first_at:%H:%M}–{last_at:%H:%M}</b>'
         f'<strong style="color:{color}">{pnl:+.2f} € ({float(summary["pnl_percent"]):+.2f} %)</strong>'
         f'<span>Depot {float(summary["ending_equity"]):.2f} €</span>'
@@ -547,6 +578,10 @@ def _automatic_day_chart(store: DataStore) -> None:
         frames["15m"] = fifteen_minutes
 
     analyses, enriched, _errors = analyze_timeframes(frames)
+    try:
+        external_context = ExternalMarketContext(**_cached_external_context())
+    except Exception:
+        external_context = ExternalMarketContext()
     signal = build_market_signal(
         analyses,
         enriched,
@@ -561,6 +596,7 @@ def _automatic_day_chart(store: DataStore) -> None:
         else None,
         require_volume_confirmation=candles.attrs.get("quote_type") != "bid",
         enforce_liquidity_filter=False,
+        external_context=external_context,
     )
     paper_account = current_paper_account(store, quote.bid)
     bot_status = store.get_focus_bot_status()
@@ -619,7 +655,7 @@ def _automatic_day_chart(store: DataStore) -> None:
                 width="stretch",
             )
             if st.button(
-                "Heutigen v4-Replay berechnen",
+                "Heutigen v5-Replay berechnen",
                 icon=":material/history:",
                 key="dwave_run_today_replay",
                 width="stretch",

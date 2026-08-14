@@ -136,6 +136,73 @@ def test_focus_paper_account_requires_entry_confirmation(store):
     assert account.quantity == 0
 
 
+def test_focus_paper_extends_profitable_trade_while_trend_remains_positive(store):
+    now = datetime(2026, 8, 14, 13, 0, tzinfo=UTC)
+    run_paper_account(store, _quote(18.0, 18.05, now), _signal("BUY", 18.0), signal_at=now)
+    rising = replace(
+        _signal("BUY", 18.30),
+        action="WAIT",
+        score=70.0,
+        forecast_direction="EHER STEIGEND",
+        external_context_score=55.0,
+    )
+
+    account = run_paper_account(
+        store,
+        _quote(18.30, 18.35, now + timedelta(minutes=31)),
+        rising,
+        signal_at=now + timedelta(minutes=31),
+    )
+
+    assert account.state == "INVESTIERT"
+
+
+def test_focus_paper_ends_extended_trade_when_trend_is_no_longer_confirmed(store):
+    now = datetime(2026, 8, 14, 13, 0, tzinfo=UTC)
+    run_paper_account(store, _quote(18.0, 18.05, now), _signal("BUY", 18.0), signal_at=now)
+    neutral = replace(
+        _signal("BUY", 18.30),
+        action="WAIT",
+        score=54.0,
+        forecast_direction="SEITWÄRTS",
+        external_context_score=50.0,
+    )
+
+    account = run_paper_account(
+        store,
+        _quote(18.30, 18.35, now + timedelta(minutes=31)),
+        neutral,
+        signal_at=now + timedelta(minutes=31),
+    )
+
+    assert account.state == "CASH"
+    portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
+    assert "Adaptive Haltedauer" in store.list_trades(portfolio.id)[0].exit_reason
+
+
+def test_focus_paper_keeps_hard_120_minute_safety_limit(store):
+    now = datetime(2026, 8, 14, 13, 0, tzinfo=UTC)
+    run_paper_account(store, _quote(18.0, 18.05, now), _signal("BUY", 18.0), signal_at=now)
+    rising = replace(
+        _signal("BUY", 18.30),
+        action="WAIT",
+        score=75.0,
+        forecast_direction="EHER STEIGEND",
+        external_context_score=60.0,
+    )
+
+    account = run_paper_account(
+        store,
+        _quote(18.30, 18.35, now + timedelta(minutes=121)),
+        rising,
+        signal_at=now + timedelta(minutes=121),
+    )
+
+    assert account.state == "CASH"
+    portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
+    assert "120 Minuten" in store.list_trades(portfolio.id)[0].exit_reason
+
+
 def test_focus_paper_account_pauses_after_an_exit(store):
     now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
     quote = _quote(18.0, 18.05, now)

@@ -1,4 +1,4 @@
-"""Fuehrt den heutigen D-Wave-v4-Replay mit historischen L&S-Spreads aus."""
+"""Fuehrt den heutigen D-Wave-v5-Replay mit historischen L&S-Spreads aus."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from src.focus.stock3 import Stock3LangSchwarzProvider
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="D-Wave-v4-Tages-Replay")
+    parser = argparse.ArgumentParser(description="D-Wave-v5-Tages-Replay")
     parser.add_argument(
         "--confirmation-observations",
         type=int,
@@ -29,7 +29,7 @@ def main() -> None:
     )
     berlin = ZoneInfo("Europe/Berlin")
     print(
-        f"D-Wave v4 · {result.trading_date:%d.%m.%Y} · "
+        f"D-Wave v5 · {result.trading_date:%d.%m.%Y} · "
         f"{result.first_candle_at.astimezone(berlin):%H:%M}–"
         f"{result.last_candle_at.astimezone(berlin):%H:%M} Uhr"
     )
@@ -56,7 +56,7 @@ def main() -> None:
             + ", ".join(f"{reason} {count}×" for reason, count in result.rejected_entries)
         )
     if not result.orders:
-        print("Keine Orders: Kein Setup hat alle v4-Bedingungen einschließlich Kostenhürde erfüllt.")
+        print("Keine Orders: Kein Setup hat alle v5-Bedingungen einschließlich Kostenhürde erfüllt.")
     for order in result.orders:
         print(
             f"{order.executed_at.astimezone(berlin):%H:%M} {order.side} "

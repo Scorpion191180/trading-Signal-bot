@@ -1,4 +1,4 @@
-"""Fokussierte D-Wave-Intraday-Analyse für eine Haltedauer von 5 bis 30 Minuten."""
+"""Fokussierte D-Wave-Analyse mit adaptiver, trendabhängiger Haltedauer."""
 
 from .analysis import (
     DWAVE_INSTRUMENT,

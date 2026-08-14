@@ -10,6 +10,7 @@ from src.focus.analysis import (
     MICROTREND_CONTINUATION_EVENT,
     SPEC_BY_KEY,
     US_OPENING_REVERSAL_EVENT,
+    ExternalMarketContext,
     FocusPosition,
     _microtrend_continuation,
     _profit_exhaustion,
@@ -240,7 +241,7 @@ def test_short_term_confirmation_creates_buy_and_profitable_add_signal():
 
     assert buy.action == "BUY"
     assert add.action == "ADD"
-    assert buy.holding_period == "5–30 Minuten"
+    assert buy.holding_period == "adaptiv · meist 5–30 Minuten, maximal 120 Minuten"
     assert buy.entry_low < buy.current_price < buy.entry_high
     assert buy.stop_loss < buy.current_price < buy.target
     assert buy.forecast_direction == "EHER STEIGEND"
@@ -281,6 +282,41 @@ def test_wide_spread_blocks_a_short_term_entry():
     assert signal.action == "WAIT"
     assert "Spread" in signal.warning
     assert signal.spread_percent == 1.2
+
+
+def test_external_market_and_news_context_changes_score_but_stays_bounded():
+    now = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+    analyses, enriched, _ = analyze_timeframes(_frames(now))
+    positive = build_intraday_signal(
+        analyses,
+        enriched,
+        FocusPosition(),
+        now=now,
+        enforce_market_hours=False,
+        external_context=ExternalMarketContext(
+            score=85,
+            reasons=("D-Wave USA und Nasdaq positiv",),
+            headlines=("Bestätigte Unternehmensmeldung",),
+            available=True,
+        ),
+    )
+    negative = build_intraday_signal(
+        analyses,
+        enriched,
+        FocusPosition(),
+        now=now,
+        enforce_market_hours=False,
+        external_context=ExternalMarketContext(
+            score=15,
+            reasons=("D-Wave USA und Nasdaq negativ",),
+            available=True,
+        ),
+    )
+
+    assert positive.score > negative.score
+    assert positive.score - negative.score <= 14
+    assert positive.external_context_score == 85
+    assert positive.latest_news == ("Bestätigte Unternehmensmeldung",)
 
 
 def test_live_tradegate_price_is_used_for_position_and_display():

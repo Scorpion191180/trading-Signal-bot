@@ -20,7 +20,14 @@ import pandas as pd
 from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
 
-from .analysis import DWAVE_INSTRUMENT, IntradaySignal, analyze_timeframes, build_market_signal
+from .analysis import (
+    DWAVE_INSTRUMENT,
+    ExternalMarketContext,
+    IntradaySignal,
+    analyze_timeframes,
+    build_market_signal,
+)
+from .context import FocusContextProvider
 from .data import resample_ohlcv
 from .paper import PAPER_STRATEGY_VERSION, PaperAccount, current_paper_account, run_paper_account
 from .quote import LiveQuote, resample_intraday_candles
@@ -33,6 +40,7 @@ IDLE_POLL_SECONDS = 60
 ENTRY_CONFIRMATION_CYCLES = 2
 BERLIN = ZoneInfo("Europe/Berlin")
 HISTORY_TTL_SECONDS = {60: 10, 300: 60, 3600: 300, 86400: 900}
+CONTEXT_TTL_SECONDS = 300
 
 
 class MarketProvider(Protocol):
@@ -119,12 +127,15 @@ class FocusPaperWorker:
         store: DataStore,
         *,
         provider: MarketProvider | None = None,
+        context_provider: FocusContextProvider | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.store = store
         self.provider = provider or Stock3LangSchwarzProvider()
+        self.context_provider = context_provider
         self.clock = clock or (lambda: datetime.now(UTC))
         self._history_cache: dict[int, tuple[float, pd.DataFrame]] = {}
+        self._context_cache: tuple[float, ExternalMarketContext] | None = None
         self._entry_candidate_bucket: str | None = None
         self._entry_candidate_cycles = 0
 
@@ -158,6 +169,20 @@ class FocusPaperWorker:
             "1mo": resample_ohlcv(daily, "ME", drop_future_label=True),
         }
         return minute, frames
+
+    def _external_context(self) -> ExternalMarketContext | None:
+        if self.context_provider is None:
+            return None
+        if (
+            self._context_cache is not None
+            and monotonic() - self._context_cache[0] < CONTEXT_TTL_SECONDS
+        ):
+            return self._context_cache[1]
+        context, news_items = self.context_provider.snapshot()
+        if news_items:
+            self.store.upsert_news(list(news_items))
+        self._context_cache = (monotonic(), context)
+        return context
 
     def _entry_confirmed(self, signal: IntradaySignal, signal_at: datetime) -> bool:
         """Verlangt zwei gleiche Messungen innerhalb des neuen Fuenf-Minuten-Blocks."""
@@ -272,6 +297,7 @@ class FocusPaperWorker:
             order_imbalance=None,
             require_volume_confirmation=False,
             enforce_liquidity_filter=False,
+            external_context=self._external_context(),
         )
         signal_at = quote.quoted_at or quote.fetched_at
         account = run_paper_account(
@@ -339,7 +365,7 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     singleton = _singleton_lock()
-    worker = FocusPaperWorker(_store())
+    worker = FocusPaperWorker(_store(), context_provider=FocusContextProvider())
     if args.once:
         try:
             worker.run_once(force=args.force)

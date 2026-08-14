@@ -6,7 +6,7 @@ Eine bewusst reduzierte Streamlit-App für genau ein Instrument:
 - deutsches Börsenkürzel **RQ0**
 - WKN **A3DSV9**
 - ISIN **US26740W1099**
-- geplanter Trade-Horizont **5 bis 30 Minuten**
+- adaptive Haltedauer: **meist 5 bis 30 Minuten**, bei bestätigtem Trend höchstens **120 Minuten**
 
 Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktualisierten, professionellen Kurschart. Ein getrenntes Papierkonto testet die Signale mit 2.000 € Spielgeld; die App führt keine echte Order aus. Ihre technischen Signale sind keine Anlageberatung und keine Erfolgs- oder Gewinngarantie.
 
@@ -40,7 +40,7 @@ Die Anzeige wird bei geöffneter App automatisch alle zehn Sekunden neu geladen.
 
 Die eingetragene private Position dient ausschließlich zur Anzeige ihres ungefähren Werts und Gewinns oder Verlusts zum L&S-Geldkurs. Sie verändert das neutrale **KAUFEN / WARTEN / VERKAUFEN**-Marktsignal nicht. Dadurch bleibt ein Kaufsignal sichtbar, selbst wenn bereits eine private D-Wave-Position besteht oder ihr Einstand über dem aktuellen Kurs liegt.
 
-Daneben besitzt der Signal-Bot ein dauerhaft gespeichertes Papierkonto mit **2.000 € Startkapital**. Bei einem bestätigten Kaufsignal investiert er das verfügbare Spielgeld in D-Wave; ein bestätigtes Verkaufssignal, Stop-Loss oder technisches Ziel schließt die virtuelle Position. Bereits vergangene Chartabschnitte werden nicht nachträglich gehandelt. Die App zeigt nur Konto, Signale und Heartbeat an; ausschließlich der Hintergrunddienst darf Papierorders schreiben. Es gibt weiterhin keine Verbindung zu einem Broker und keine Echtgeldorder.
+Daneben besitzt der Signal-Bot ein dauerhaft gespeichertes Papierkonto mit **2.000 € Startkapital**. Bei einem bestätigten Kaufsignal investiert er das verfügbare Spielgeld in D-Wave; ein bestätigtes Verkaufssignal, Stop-Loss oder technisches Ziel schließt die virtuelle Position. Nach 30 Minuten bleibt eine profitable Position nur offen, wenn Richtungsschätzung, Modellscore und externer Markt-/Nachrichtenkontext den Aufwärtstrend weiter bestätigen. Bei nachlassendem Trend wird verkauft; nach 120 Minuten greift unabhängig davon ein Sicherheitslimit. Bereits vergangene Chartabschnitte werden nicht nachträglich gehandelt. Die App zeigt nur Konto, Signale und Heartbeat an; ausschließlich der Hintergrunddienst darf Papierorders schreiben. Es gibt weiterhin keine Verbindung zu einem Broker und keine Echtgeldorder.
 
 Das Ausführungsmodell bildet eine Trade-Republic-Standardorder konservativ nach:
 
@@ -53,15 +53,17 @@ Bei mehr als 0,6 % Spread bleibt das technische Kaufsignal sichtbar, der Papier-
 
 ## Signallogik im Hintergrund
 
-Die 5–30-Minuten-Prognose kombiniert fünf Ansätze, statt sich auf einen einzelnen Indikator zu verlassen:
+Die kurzfristige Prognose kombiniert mehrere Ansätze, statt sich auf einen einzelnen Indikator zu verlassen:
 
 - **Trend:** EMA-Richtung über 1, 5, 15 und 60 Minuten,
 - **Momentum:** RSI und Veränderung des MACD-Histogramms,
 - **Ausbruch:** Lage in der jüngsten Handelsspanne und Volumenbestätigung,
 - **Rücklauf:** Abstand zum 20-Kerzen-Mittelwert in einer Seitwärtsphase,
 - **Kontext:** Stunde, Tag, Woche und Monat als Filter gegen Trades in einen starken Gegentrend.
+- **Marktreaktion:** D-Wave an der US-Börse, Quantum-Vergleichsaktien, Nasdaq, S&P 500, Halbleiter, VIX, Gold und EUR/USD.
+- **Nachrichten:** zeitgewichtete Meldungen zu D-Wave, Quantum-Aktien und US-Märkten mit konservativer Schlagzeilenbewertung.
 
-Die Gewichtung wechselt zwischen Trend-, Seitwärts- und hoher Volatilitätsphase. Der laufende Geld-/Brief-Spread und – sofern vorhanden – das Verhältnis der angebotenen Stückzahlen wirken als Liquiditätsfilter. Ab 0,6 Prozent Spread wird ein Kaufsignal zwar weiterhin als technisches Testsignal angezeigt, aber nicht im Papierkonto ausgeführt. Die angezeigte Zone ist ein ATR-basierter technischer Schwankungsbereich und keine Kursgarantie. Der Modellwert von 0 bis 100 ist ausdrücklich **keine kalibrierte Trefferwahrscheinlichkeit**; seine Qualität muss mit künftigen echten Signalen weiter außerhalb der Entwicklungsdaten geprüft werden.
+Die Gewichtung wechselt zwischen Trend-, Seitwärts- und hoher Volatilitätsphase. Markt und Nachrichten dürfen den technischen Score nur begrenzt verändern und niemals allein einen Kauf auslösen. Ein außergewöhnlich negativer externer Kontext kann dagegen einen Einstieg blockieren. Fällt eine Zusatzquelle aus, wird sie neutral behandelt. Der laufende Geld-/Brief-Spread und – sofern vorhanden – das Verhältnis der angebotenen Stückzahlen wirken als Liquiditätsfilter. Ab 0,6 Prozent Spread wird ein Kaufsignal zwar weiterhin als technisches Testsignal angezeigt, aber nicht im Papierkonto ausgeführt. Die angezeigte Zone ist ein ATR-basierter technischer Schwankungsbereich und keine Kursgarantie. Der Modellwert von 0 bis 100 ist ausdrücklich **keine kalibrierte Trefferwahrscheinlichkeit**; seine Qualität muss mit künftigen echten Signalen weiter außerhalb der Entwicklungsdaten geprüft werden.
 
 ## Echte Vorwärtsprüfung
 
@@ -77,7 +79,7 @@ Obwohl nur ein Chart sichtbar ist, prüft die App weiterhin mehrere Zeitebenen:
 - Stunde und Tag verhindern einen Trade gegen einen starken Gegentrend,
 - Woche und Monat dienen nur als Risiko- und Kontextfilter.
 
-Verwendet werden EMA-Trend, RSI 14, MACD-Histogramm, ATR und die 20-Kerzen-Struktur. Falls die Kursquelle echtes Volumen liefert, wird zusätzlich relatives Volumen verlangt. Die L&S-Bid-Quote-Historie enthält kein Handelsvolumen; dort übernehmen eine starke gemeinsame 1-/5-/15-Minuten-Preisbestätigung und mindestens drei positive Strategiestimmen diese Prüfung. Die längeren Ebenen verlängern den geplanten Trade nicht.
+Verwendet werden EMA-Trend, RSI 14, MACD-Histogramm, ATR und die 20-Kerzen-Struktur. Falls die Kursquelle echtes Volumen liefert, wird zusätzlich relatives Volumen verlangt. Die L&S-Bid-Quote-Historie enthält kein Handelsvolumen; dort übernehmen eine starke gemeinsame 1-/5-/15-Minuten-Preisbestätigung und mindestens drei positive Strategiestimmen diese Prüfung. Die längeren Ebenen und der aktuelle externe Kontext entscheiden nach 30 Minuten mit, ob ein profitabler Trend weiter gehalten werden darf. Stop, bestätigter Trendbruch und Gewinnerschöpfung haben jederzeit Vorrang.
 
 Methodisch berücksichtigt die Umsetzung sowohl die dokumentierte Trendfortsetzung als auch deren Grenzen und kurzfristige Rückläufe: [Time Series Momentum (Journal of Financial Economics)](https://www.sciencedirect.com/science/article/pii/S0304405X11002613), [Short-Horizon Return Reversals and the Bid-Ask Spread (Journal of Financial Intermediation)](https://www.sciencedirect.com/science/article/pii/S1042957385710066). Eine spätere echte Kalibrierung darf nur zeitlich vorwärts testen; zufällig gemischte Trainings- und Testdaten würden Informationen aus der Zukunft einschleusen. Dafür ist ein Walk-forward-Verfahren wie [TimeSeriesSplit](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) vorgesehen.
 
@@ -89,7 +91,7 @@ Für die auswählbaren Ansichten bis etwa drei Jahre werden die verfügbaren L&S
 
 **Tradegate BSX** bleibt als automatische Ersatzquelle aktiv, falls Lang & Schwarz vorübergehend nicht erreichbar oder unvollständig ist. Die gerade verwendete Quelle steht jederzeit direkt unter dem Chart. Für Tradegate endet die Signalfreigabe bereits um 22:00 Uhr.
 
-**yfinance** bleibt als historische Kontext- und Reservequelle erhalten, falls eine benötigte öffentliche L&S-Historie zeitweise nicht abrufbar ist. Yahoo-Kerzen werden nicht als L&S-Bid-Daten ausgegeben.
+**yfinance** bleibt als historische Kontext- und Reservequelle erhalten und liefert zusätzlich kostenlose Marktreaktionen sowie eine vorsichtige Nachrichtensuche. Yahoo-Kerzen werden nicht als L&S-Bid-Daten ausgegeben. Wichtige Unternehmensmeldungen lassen sich gegen die [offizielle D-Wave-Newsseite](https://ir.dwavequantum.com/news/) und regulatorische Veröffentlichungen gegen die kostenlosen [SEC-EDGAR-Such- und RSS-Angebote](https://www.sec.gov/search-filings) prüfen. Nachrichtenquellen können unvollständig oder verzögert sein; deshalb handelt der Bot nie ausschließlich aufgrund einer Schlagzeile.
 
 Ein alter letzter Umsatz ist nicht automatisch ein alter Markt: Geld und Brief können sich ändern, obwohl in einer Minute kein Handel zustande kommt. Deshalb basiert der Hauptchart nun auf den Veränderungen des L&S-Geldkurses. Der Briefkurs und der Spread bleiben als Kauf- und Liquiditätsprüfung getrennt erhalten.
 

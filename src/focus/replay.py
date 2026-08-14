@@ -137,7 +137,7 @@ def replay_focus_day(
     selected_date: date | None = None,
     confirmation_observations: int = 2,
 ) -> FocusReplayResult:
-    """Spielt v4 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
+    """Spielt v5 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
 
     if confirmation_observations < 1:
         raise ValueError("Die Zahl der Bestätigungsbeobachtungen muss positiv sein.")

@@ -58,6 +58,7 @@ NEW_YORK = ZoneInfo("America/New_York")
 US_OPENING_REVERSAL_EVENT = "US-Eröffnung: Abverkauf und Rückeroberung des vorherigen Tiefs"
 MICROTREND_CONTINUATION_EVENT = "Mikrotrend: steigende grüne Kerzen und lokaler Ausbruch"
 PROFIT_EXHAUSTION_EVENT = "Gewinnmitnahme: überkaufter Mikrotrend verliert Schwung"
+ADAPTIVE_HOLDING_PERIOD = "adaptiv · meist 5–30 Minuten, maximal 120 Minuten"
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,19 @@ class FocusPosition:
     invested: bool = False
     average_price: float | None = None
     quantity: float | None = None
+
+
+@dataclass(frozen=True)
+class ExternalMarketContext:
+    """Vorsichtiger Zusatzkontext aus Märkten und zeitnahen Nachrichten."""
+
+    score: float = 50.0
+    market_score: float = 50.0
+    news_score: float = 0.5
+    reasons: tuple[str, ...] = ()
+    headlines: tuple[str, ...] = ()
+    updated_at: datetime | None = None
+    available: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,9 @@ class IntradaySignal:
     liquidity_low: float | None = None
     liquidity_high: float | None = None
     structure_event: str = ""
+    external_context_score: float = 50.0
+    external_context_reasons: tuple[str, ...] = ()
+    latest_news: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -814,6 +831,7 @@ def build_strategy_ensemble(
     *,
     spread_percent: float | None = None,
     order_imbalance: float | None = None,
+    external_context: ExternalMarketContext | None = None,
 ) -> StrategyEnsemble:
     """Kombiniert Trend, Momentum, Ausbruch, Rücklauf und höheren Kontext ohne Look-ahead."""
 
@@ -890,6 +908,9 @@ def build_strategy_ensemble(
         score += min(max(order_imbalance, -1.0), 1.0) * 4
     if spread_percent is not None and spread_percent > 0.6:
         score = 50 + (score - 50) * 0.70
+    if external_context is not None and external_context.available:
+        context_adjustment = np.clip((external_context.score - 50) * 0.18, -7.0, 7.0)
+        score += float(context_adjustment)
     score = round(_bounded_score(score), 1)
     direction = "EHER STEIGEND" if score >= 58 else "EHER FALLEND" if score <= 42 else "SEITWÄRTS"
 
@@ -930,6 +951,7 @@ def build_intraday_signal(
     order_imbalance: float | None = None,
     require_volume_confirmation: bool = True,
     enforce_liquidity_filter: bool = True,
+    external_context: ExternalMarketContext | None = None,
 ) -> IntradaySignal:
     current_time = now or datetime.now(UTC)
     required = ("1m", "5m", "15m", "1h", "1d", "1wk", "1mo")
@@ -947,7 +969,7 @@ def build_intraday_signal(
             entry_high=None,
             stop_loss=None,
             target=None,
-            holding_period="5–30 Minuten",
+            holding_period=ADAPTIVE_HOLDING_PERIOD,
             reasons=("Für einen Kurzfrist-Trade müssen alle sieben Zeitebenen verfügbar sein.",),
             warning="Fehlend: " + ", ".join(SPEC_BY_KEY[key].label for key in missing),
             data_age_minutes=float("inf"),
@@ -973,6 +995,7 @@ def build_intraday_signal(
         price,
         spread_percent=spread_percent,
         order_imbalance=order_imbalance,
+        external_context=external_context,
     )
     score = forecast.score
     five_minute_atr = _latest_finite(enriched["5m"], "atr_14", price * 0.006)
@@ -992,7 +1015,7 @@ def build_intraday_signal(
             None,
             None,
             None,
-            "5–30 Minuten",
+            ADAPTIVE_HOLDING_PERIOD,
             ("Kurzfristige Signale werden nur während der Handelszeit der Kursquelle freigegeben.",),
             "Der nächste Kurs kann mit einer Lücke eröffnen; jetzt keine Handlung ableiten.",
             age_minutes,
@@ -1017,7 +1040,7 @@ def build_intraday_signal(
             None,
             None,
             None,
-            "5–30 Minuten",
+            ADAPTIVE_HOLDING_PERIOD,
             (f"Die letzte abgeschlossene 1-Minuten-Kerze ist {age_minutes:.1f} Minuten alt.",),
             "Für einen 5–30-Minuten-Trade sind verzögerte Gratisdaten nicht sicher genug.",
             age_minutes,
@@ -1041,6 +1064,11 @@ def build_intraday_signal(
     short_volume = observed_short_volume or not require_volume_confirmation
     wide_spread = spread_percent is not None and spread_percent > 0.6
     liquidity_veto = wide_spread and enforce_liquidity_filter
+    external_risk_veto = bool(
+        external_context is not None
+        and external_context.available
+        and external_context.score <= 25
+    )
     latest_five = enriched["5m"].iloc[-1]
     latest_fifteen = enriched["15m"].iloc[-1]
     five_atr = _latest_finite(enriched["5m"], "atr_14", price * 0.006)
@@ -1061,14 +1089,24 @@ def build_intraday_signal(
     microtrend = _microtrend_continuation(enriched["1m"], spread_percent)
     profit_exhaustion = _profit_exhaustion(enriched["1m"])
     opening_context_ok = analyses["1h"].score >= 25 and analyses["1d"].score >= 25
-    opening_trigger = opening_reversal.active and opening_context_ok and not liquidity_veto
+    opening_trigger = (
+        opening_reversal.active
+        and opening_context_ok
+        and not liquidity_veto
+        and not external_risk_veto
+    )
     microtrend_context_ok = (
         analyses["5m"].score >= 50
         and analyses["15m"].score >= 50
         and analyses["1h"].score >= 45
         and analyses["1d"].score >= 40
     )
-    microtrend_trigger = microtrend.active and microtrend_context_ok and not liquidity_veto
+    microtrend_trigger = (
+        microtrend.active
+        and microtrend_context_ok
+        and not liquidity_veto
+        and not external_risk_veto
+    )
     if opening_trigger and opening_reversal.stop_loss is not None and opening_reversal.target is not None:
         stop_loss = opening_reversal.stop_loss
         target = opening_reversal.target
@@ -1096,10 +1134,16 @@ def build_intraday_signal(
         and not_chasing
         and not smart_money.bearish_reversal
         and not liquidity_veto
+        and not external_risk_veto
     )
     context_veto = analyses["1h"].score < 38 or analyses["1d"].score < 35
     bearish_exit = analyses["1m"].score <= 38 and analyses["5m"].score <= 42
     reasons = (
+        (
+            "Markt/Nachrichten: " + " · ".join(external_context.reasons)
+            if external_context is not None and external_context.available
+            else "Markt/Nachrichten: Zusatzkontext nicht verfügbar · technisch neutral behandelt"
+        ),
         (
             "US-Eröffnung bestätigt: starker Abverkauf · vorheriges Tief geholt · "
             "bullisch zurückerobert"
@@ -1135,6 +1179,8 @@ def build_intraday_signal(
     warning = "Kein Trade, bis 1- und 5-Minuten-Chart gemeinsam bestätigen."
     if liquidity_veto:
         warning = "Kein Einstieg: Der Geld-/Brief-Spread ist für einen 5–30-Minuten-Trade zu groß."
+    if external_risk_veto:
+        warning = "Kein Einstieg: Nachrichten- und Marktumfeld zeigen derzeit außergewöhnlich hohes Risiko."
     if position.invested:
         if profit_exhaustion:
             action, headline, color = "SELL", "VERKAUFEN – Aufwärtsschwung lässt nach", "#ef4444"
@@ -1167,7 +1213,7 @@ def build_intraday_signal(
         warning = "Frühes Fortsetzungssetup; steigende Kerzen allein reichen ohne Ausbruch nicht aus."
     elif short_trigger and not context_veto and score >= 64:
         action, headline, color = "BUY", "KAUFEN – kurzfristiges technisches Signal", "#22c55e"
-        warning = "Nur für etwa 5–30 Minuten; bei Unterschreiten des Stops ist das Setup ungültig."
+        warning = "Adaptiv halten; bei Stop oder bestätigtem Trendbruch ist das Setup ungültig."
         if wide_spread:
             warning = "Technisches Kaufsignal vorhanden; der aktuelle Spread ist für eine Ausführung zu teuer."
 
@@ -1182,7 +1228,7 @@ def build_intraday_signal(
         entry_high=entry_high if action in {"BUY", "ADD"} else None,
         stop_loss=stop_loss if action in {"BUY", "ADD", "HOLD"} else None,
         target=target if action in {"BUY", "ADD", "HOLD"} else None,
-        holding_period="5–30 Minuten",
+        holding_period=ADAPTIVE_HOLDING_PERIOD,
         reasons=reasons,
         warning=warning,
         data_age_minutes=age_minutes,
@@ -1207,6 +1253,9 @@ def build_intraday_signal(
             if microtrend.active
             else smart_money.event
         ),
+        external_context_score=external_context.score if external_context is not None else 50.0,
+        external_context_reasons=external_context.reasons if external_context is not None else (),
+        latest_news=external_context.headlines if external_context is not None else (),
     )
 
 
