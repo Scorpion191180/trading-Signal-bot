@@ -14,6 +14,7 @@ from src.database import DataStore, create_database, create_session_factory
 
 from .analysis import (
     DWAVE_INSTRUMENT,
+    MICROTREND_CONTINUATION_EVENT,
     US_OPENING_REVERSAL_EVENT,
     analyze_timeframes,
     build_market_signal,
@@ -136,7 +137,7 @@ def replay_focus_day(
     selected_date: date | None = None,
     confirmation_observations: int = 2,
 ) -> FocusReplayResult:
-    """Spielt v3 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
+    """Spielt v4 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
 
     if confirmation_observations < 1:
         raise ValueError("Die Zahl der Bestätigungsbeobachtungen muss positiv sein.")
@@ -225,7 +226,8 @@ def replay_focus_day(
             had_position = account.quantity > 0
             required_confirmations = (
                 1
-                if signal.structure_event == US_OPENING_REVERSAL_EVENT
+                if signal.structure_event
+                in {US_OPENING_REVERSAL_EVENT, MICROTREND_CONTINUATION_EVENT}
                 else confirmation_observations
             )
             account = run_paper_account(

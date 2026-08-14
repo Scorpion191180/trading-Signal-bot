@@ -56,6 +56,8 @@ SPEC_BY_KEY = {spec.key: spec for spec in TIMEFRAME_SPECS}
 BERLIN = ZoneInfo("Europe/Berlin")
 NEW_YORK = ZoneInfo("America/New_York")
 US_OPENING_REVERSAL_EVENT = "US-Eröffnung: Abverkauf und Rückeroberung des vorherigen Tiefs"
+MICROTREND_CONTINUATION_EVENT = "Mikrotrend: steigende grüne Kerzen und lokaler Ausbruch"
+PROFIT_EXHAUSTION_EVENT = "Gewinnmitnahme: überkaufter Mikrotrend verliert Schwung"
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,18 @@ class OpeningReversal:
     stop_loss: float | None = None
     target: float | None = None
     event: str = "Kein bestätigtes US-Eröffnungs-Reversal"
+
+
+@dataclass(frozen=True)
+class MicrotrendContinuation:
+    """Frühe Fortsetzung nach Rücksetzer und bullischer Kerzentreppe."""
+
+    active: bool = False
+    event_at: datetime | None = None
+    breakout_level: float | None = None
+    stop_loss: float | None = None
+    target: float | None = None
+    event: str = "Kein bestätigter Mikrotrend-Ausbruch"
 
 
 def _rolling_linear_regression(series: pd.Series, length: int = 11) -> pd.Series:
@@ -444,6 +458,78 @@ def _us_opening_reversal(
             event=US_OPENING_REVERSAL_EVENT,
         )
     return OpeningReversal()
+
+
+def _microtrend_continuation(
+    frame: pd.DataFrame,
+    spread_percent: float | None,
+) -> MicrotrendContinuation:
+    """Erkennt eine kleine bullische Kerzentreppe nach einem echten Rücksetzer."""
+
+    if frame.empty or len(frame) < 24 or (spread_percent is not None and spread_percent > 0.45):
+        return MicrotrendContinuation()
+    latest = frame.iloc[-1]
+    candidate_atr = float(latest.get("atr_14", np.nan))
+    if not np.isfinite(candidate_atr) or candidate_atr <= 0:
+        return MicrotrendContinuation()
+
+    staircase = frame.tail(4)
+    prelude = frame.iloc[-16:-4]
+    if len(staircase) < 4 or len(prelude) < 8:
+        return MicrotrendContinuation()
+    opens = staircase["open"].to_numpy(dtype=float)
+    closes = staircase["close"].to_numpy(dtype=float)
+    lows = staircase["low"].to_numpy(dtype=float)
+    bullish_staircase = bool(
+        np.all(closes > opens)
+        and np.all(np.diff(closes) >= -candidate_atr * 0.05)
+        and np.all(np.diff(lows) > 0)
+        and closes[-1] - opens[0] >= candidate_atr * 1.5
+    )
+
+    prior_local_high = float(frame["high"].iloc[-12:-1].max())
+    breakout = closes[-1] > prior_local_high
+    running_high = prelude["high"].cummax()
+    pullback_range = float((running_high - prelude["low"]).max())
+    preceding_pullback = pullback_range >= candidate_atr * 1.5
+    trend_ok = (
+        closes[-1] > float(latest["ema_fast"]) > float(latest["ema_slow"])
+        and 50 <= float(latest["rsi_14"]) <= 70
+    )
+    if not (bullish_staircase and breakout and preceding_pullback and trend_ok):
+        return MicrotrendContinuation()
+
+    stop_loss = float(latest["low"]) - candidate_atr * 0.12
+    return MicrotrendContinuation(
+        active=True,
+        event_at=pd.Timestamp(frame.index[-1]).to_pydatetime(),
+        breakout_level=prior_local_high,
+        stop_loss=stop_loss,
+        target=closes[-1] + max(candidate_atr * 10.0, pullback_range * 3.5),
+        event=MICROTREND_CONTINUATION_EVENT,
+    )
+
+
+def _profit_exhaustion(frame: pd.DataFrame) -> bool:
+    """Erkennt die erste deutliche rote Reaktion nach extremem 1-Minuten-RSI."""
+
+    if len(frame) < 5:
+        return False
+    latest = frame.iloc[-1]
+    previous = frame.iloc[-2]
+    candidate_atr = float(latest.get("atr_14", np.nan))
+    if not np.isfinite(candidate_atr) or candidate_atr <= 0:
+        return False
+    prior_peak_rsi = float(frame["rsi_14"].iloc[-4:-1].max())
+    latest_rsi = float(latest["rsi_14"])
+    recent_high = float(frame["high"].iloc[-4:].max())
+    return bool(
+        prior_peak_rsi >= 80
+        and prior_peak_rsi - latest_rsi >= 5
+        and float(latest["close"]) < float(latest["open"])
+        and float(latest["close"]) < float(previous["close"])
+        and recent_high - float(latest["close"]) >= candidate_atr * 0.25
+    )
 
 
 def _momentum_factor(current_rsi: float, macd_hist: float, previous_hist: float) -> float:
@@ -972,11 +1058,25 @@ def build_intraday_signal(
     )
     smart_money = _smart_money_context(enriched["5m"])
     opening_reversal = _us_opening_reversal(enriched["1m"], current_time, spread_percent)
+    microtrend = _microtrend_continuation(enriched["1m"], spread_percent)
+    profit_exhaustion = _profit_exhaustion(enriched["1m"])
     opening_context_ok = analyses["1h"].score >= 25 and analyses["1d"].score >= 25
     opening_trigger = opening_reversal.active and opening_context_ok and not liquidity_veto
+    microtrend_context_ok = (
+        analyses["5m"].score >= 50
+        and analyses["15m"].score >= 50
+        and analyses["1h"].score >= 45
+        and analyses["1d"].score >= 40
+    )
+    microtrend_trigger = microtrend.active and microtrend_context_ok and not liquidity_veto
     if opening_trigger and opening_reversal.stop_loss is not None and opening_reversal.target is not None:
         stop_loss = opening_reversal.stop_loss
         target = opening_reversal.target
+        entry_low = price - 0.05 * one_minute_atr
+        entry_high = price + 0.10 * one_minute_atr
+    elif microtrend_trigger and microtrend.stop_loss is not None and microtrend.target is not None:
+        stop_loss = microtrend.stop_loss
+        target = microtrend.target
         entry_low = price - 0.05 * one_minute_atr
         entry_high = price + 0.10 * one_minute_atr
     setup_confirmation = (
@@ -1006,6 +1106,11 @@ def build_intraday_signal(
             if opening_reversal.active
             else "US-Eröffnung: kein bestätigter Sell-Side-Sweep mit Rückeroberung"
         ),
+        (
+            "Mikrotrend bestätigt: vier grüne Kerzen · steigende Tiefs · lokales Hoch gebrochen"
+            if microtrend.active
+            else "Mikrotrend: keine bestätigte Kerzentreppe mit Ausbruch"
+        ),
         f"Marktphase {forecast.regime}: " + " · ".join(forecast.votes),
         f"1 Minute {analyses['1m'].score:.0f} · 5 Minuten {analyses['5m'].score:.0f} · "
         f"15 Minuten {analyses['15m'].score:.0f}",
@@ -1031,7 +1136,10 @@ def build_intraday_signal(
     if liquidity_veto:
         warning = "Kein Einstieg: Der Geld-/Brief-Spread ist für einen 5–30-Minuten-Trade zu groß."
     if position.invested:
-        if opening_trigger:
+        if profit_exhaustion:
+            action, headline, color = "SELL", "VERKAUFEN – Aufwärtsschwung lässt nach", "#ef4444"
+            warning = "Nach extremem 1-Minuten-RSI bestätigt eine rote Kerze die Gewinnmitnahme."
+        elif opening_trigger:
             if position.average_price is not None and price >= position.average_price:
                 action, headline, color = "ADD", "NACHKAUFEN – US-Eröffnungs-Reversal bestätigt", "#22c55e"
                 warning = "Der Abverkauf wurde zurückerobert; Stop und Kostenhürde bleiben verbindlich."
@@ -1054,6 +1162,9 @@ def build_intraday_signal(
     elif opening_trigger:
         action, headline, color = "BUY", "KAUFEN – bestätigtes US-Eröffnungs-Reversal", "#22c55e"
         warning = "Nur nach Rückeroberung; der Stop liegt knapp unter dem zurückgewonnenen Tief."
+    elif microtrend_trigger:
+        action, headline, color = "BUY", "KAUFEN – bullischer Mikrotrend bestätigt", "#22c55e"
+        warning = "Frühes Fortsetzungssetup; steigende Kerzen allein reichen ohne Ausbruch nicht aus."
     elif short_trigger and not context_veto and score >= 64:
         action, headline, color = "BUY", "KAUFEN – kurzfristiges technisches Signal", "#22c55e"
         warning = "Nur für etwa 5–30 Minuten; bei Unterschreiten des Stops ist das Setup ungültig."
@@ -1087,7 +1198,15 @@ def build_intraday_signal(
         demand_high=smart_money.demand_high,
         liquidity_low=smart_money.liquidity_low,
         liquidity_high=smart_money.liquidity_high,
-        structure_event=opening_reversal.event if opening_reversal.active else smart_money.event,
+        structure_event=(
+            PROFIT_EXHAUSTION_EVENT
+            if action == "SELL" and profit_exhaustion
+            else opening_reversal.event
+            if opening_reversal.active
+            else microtrend.event
+            if microtrend.active
+            else smart_money.event
+        ),
     )
 
 
@@ -1104,7 +1223,10 @@ def build_market_signal(
         FocusPosition(),
         **signal_options,
     )
-    if entry_signal.action == "BUY" and entry_signal.structure_event == US_OPENING_REVERSAL_EVENT:
+    if entry_signal.action == "BUY" and entry_signal.structure_event in {
+        US_OPENING_REVERSAL_EVENT,
+        MICROTREND_CONTINUATION_EVENT,
+    }:
         return entry_signal
     exit_signal = build_intraday_signal(
         analyses,

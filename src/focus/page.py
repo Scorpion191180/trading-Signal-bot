@@ -69,7 +69,7 @@ def _cached_stock3_history(resolution_seconds: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_today_replay() -> dict[str, object]:
-    """Berechnet den v3-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
+    """Berechnet den v4-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
 
     provider = Stock3LangSchwarzProvider()
     result = replay_focus_day(
@@ -383,7 +383,7 @@ def _render_paper_account(
 def _validation_text(metrics: dict[str, float | int | None]) -> str:
     recorded = int(metrics["recorded"] or 0)
     completed = int(metrics["completed"] or 0)
-    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der neuen Strategie v3"
+    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der neuen Strategie v4"
     if completed < 20:
         forecast_label = "Prognose" if recorded == 1 else "Prognosen"
         return (
@@ -488,7 +488,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
     completed = int(summary["completed_trades"])
     costs = float(summary["transaction_costs"])
     confirmations = int(summary["confirmation_observations"])
-    note = "kein vollständiges v3-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
+    note = "kein vollständiges v4-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
     orders = summary.get("orders", ())
     order_labels: list[str] = []
     if isinstance(orders, (list, tuple)):
@@ -505,8 +505,13 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
             for order in orders
         ):
             note += " · 15:30-Kerze als Live-Bestätigungsproxy"
+        if any(
+            isinstance(order, dict) and "bullischer Mikrotrend" in str(order.get("reason", ""))
+            for order in orders
+        ):
+            note += " · 17:55-Musterkerze als Live-Bestätigungsproxy"
     st.markdown(
-        '<div class="replay-summary-bar"><label>TAGES-REPLAY V3</label>'
+        '<div class="replay-summary-bar"><label>TAGES-REPLAY V4</label>'
         f'<b>{first_at:%H:%M}–{last_at:%H:%M}</b>'
         f'<strong style="color:{color}">{pnl:+.2f} € ({float(summary["pnl_percent"]):+.2f} %)</strong>'
         f'<span>Depot {float(summary["ending_equity"]):.2f} €</span>'
@@ -614,7 +619,7 @@ def _automatic_day_chart(store: DataStore) -> None:
                 width="stretch",
             )
             if st.button(
-                "Heutigen v3-Replay berechnen",
+                "Heutigen v4-Replay berechnen",
                 icon=":material/history:",
                 key="dwave_run_today_replay",
                 width="stretch",

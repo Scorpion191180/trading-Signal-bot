@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.focus.analysis import IntradaySignal
+from src.focus.analysis import PROFIT_EXHAUSTION_EVENT, IntradaySignal
 from src.focus.paper import PAPER_PORTFOLIO_NAME, run_paper_account
 from src.focus.quote import LiveQuote
 
@@ -97,6 +97,27 @@ def test_focus_paper_account_rejects_target_that_does_not_cover_roundtrip_costs(
     assert account.state == "WARTET · KOSTEN"
     assert account.cash == 2_000.0
     assert account.total_transaction_costs == 0
+
+
+def test_focus_paper_takes_profit_on_confirmed_overbought_reversal(store):
+    now = datetime(2026, 8, 14, 15, 56, tzinfo=UTC)
+    buy_quote = _quote(18.19, 18.23, now)
+    bought = run_paper_account(store, buy_quote, _signal("BUY", buy_quote.bid), signal_at=now)
+    assert bought.state == "INVESTIERT"
+
+    exit_at = now + timedelta(minutes=25)
+    exit_quote = _quote(18.49, 18.52, exit_at)
+    exhaustion = replace(
+        _signal("SELL", exit_quote.bid),
+        score=80.0,
+        structure_event=PROFIT_EXHAUSTION_EVENT,
+    )
+    sold = run_paper_account(store, exit_quote, exhaustion, signal_at=exit_at)
+
+    assert sold.state == "CASH"
+    assert sold.result_eur > 0
+    portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
+    assert "überkaufter Mikrotrend" in store.list_trades(portfolio.id)[0].exit_reason
 
 
 def test_focus_paper_account_requires_entry_confirmation(store):

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC
 
 import pandas as pd
 import pytest
 
-from src.focus.analysis import US_OPENING_REVERSAL_EVENT, IntradaySignal
+from src.focus.analysis import (
+    MICROTREND_CONTINUATION_EVENT,
+    US_OPENING_REVERSAL_EVENT,
+    IntradaySignal,
+)
 from src.focus.replay import replay_focus_day
 
 
@@ -109,3 +114,28 @@ def test_replay_uses_closed_minute_as_proxy_for_live_opening_confirmation(monkey
     assert result.completed_trades == 1
     assert result.orders[0].side == "BUY"
     assert "US-Eröffnungs-Reversal" in result.orders[0].reason
+
+
+def test_replay_accepts_completed_microtrend_pattern_as_confirmation(monkeypatch):
+    bid = _candles()
+    ask = bid.copy()
+    for column in ("open", "high", "low", "close"):
+        ask[column] += 0.02
+    signal = replace(_buy_signal(), structure_event=MICROTREND_CONTINUATION_EVENT)
+    monkeypatch.setattr("src.focus.replay.analyze_timeframes", lambda _frames: ({}, {}, {}))
+    monkeypatch.setattr(
+        "src.focus.replay.build_market_signal",
+        lambda *_args, **_kwargs: signal,
+    )
+
+    result = replay_focus_day(
+        bid_minutes=bid,
+        ask_minutes=ask,
+        five_minutes=bid,
+        hourly=bid,
+        daily=bid,
+        confirmation_observations=2,
+    )
+
+    assert result.completed_trades == 1
+    assert "bullischer Mikrotrend" in result.orders[0].reason

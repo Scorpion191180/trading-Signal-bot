@@ -1,4 +1,4 @@
-"""Fuehrt den heutigen D-Wave-v3-Replay mit historischen L&S-Spreads aus."""
+"""Fuehrt den heutigen D-Wave-v4-Replay mit historischen L&S-Spreads aus."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from src.focus.stock3 import Stock3LangSchwarzProvider
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="D-Wave-v3-Tages-Replay")
+    parser = argparse.ArgumentParser(description="D-Wave-v4-Tages-Replay")
     parser.add_argument(
         "--confirmation-observations",
         type=int,
@@ -29,7 +29,7 @@ def main() -> None:
     )
     berlin = ZoneInfo("Europe/Berlin")
     print(
-        f"D-Wave v3 · {result.trading_date:%d.%m.%Y} · "
+        f"D-Wave v4 · {result.trading_date:%d.%m.%Y} · "
         f"{result.first_candle_at.astimezone(berlin):%H:%M}–"
         f"{result.last_candle_at.astimezone(berlin):%H:%M} Uhr"
     )
@@ -56,7 +56,7 @@ def main() -> None:
             + ", ".join(f"{reason} {count}×" for reason, count in result.rejected_entries)
         )
     if not result.orders:
-        print("Keine Orders: Kein Setup hat alle v3-Bedingungen einschließlich Kostenhürde erfüllt.")
+        print("Keine Orders: Kein Setup hat alle v4-Bedingungen einschließlich Kostenhürde erfüllt.")
     for order in result.orders:
         print(
             f"{order.executed_at.astimezone(berlin):%H:%M} {order.side} "
@@ -66,6 +66,11 @@ def main() -> None:
     if any("US-Eröffnungs-Reversal" in order.reason for order in result.orders):
         print(
             "Replay-Hinweis: Die abgeschlossene 15:30-Minutenkerze ersetzt nur im Rückblick "
+            "die zwei Live-Prüfungen im Abstand von zehn Sekunden."
+        )
+    if any("bullischer Mikrotrend" in order.reason for order in result.orders):
+        print(
+            "Replay-Hinweis: Das abgeschlossene 17:55-Kerzenmuster ersetzt nur im Rückblick "
             "die zwei Live-Prüfungen im Abstand von zehn Sekunden."
         )
     if result.open_position:

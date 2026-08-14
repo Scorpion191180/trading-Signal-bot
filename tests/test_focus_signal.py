@@ -7,9 +7,12 @@ import pandas as pd
 
 from src.data import MarketDataRequest
 from src.focus.analysis import (
+    MICROTREND_CONTINUATION_EVENT,
     SPEC_BY_KEY,
     US_OPENING_REVERSAL_EVENT,
     FocusPosition,
+    _microtrend_continuation,
+    _profit_exhaustion,
     _rolling_linear_regression,
     _smart_money_context,
     _us_opening_reversal,
@@ -120,6 +123,71 @@ def test_us_open_reversal_is_not_a_blind_timed_entry():
     )
 
     assert reversal.active is False
+
+
+def test_microtrend_continuation_detects_four_candle_staircase_after_pullback():
+    index = pd.date_range("2026-08-14 15:32:00Z", periods=24, freq="1min")
+    close = np.full(24, 18.12)
+    open_ = np.full(24, 18.11)
+    high = np.full(24, 18.14)
+    low = np.full(24, 18.09)
+    actual = (
+        (18.15, 18.16, 18.095, 18.105),
+        (18.10, 18.135, 18.095, 18.125),
+        (18.125, 18.150, 18.095, 18.105),
+        (18.110, 18.125, 18.100, 18.100),
+        (18.095, 18.115, 18.095, 18.115),
+        (18.110, 18.160, 18.105, 18.155),
+        (18.150, 18.180, 18.145, 18.170),
+        (18.160, 18.170, 18.135, 18.145),
+        (18.135, 18.155, 18.095, 18.100),
+        (18.110, 18.115, 18.090, 18.115),
+        (18.125, 18.145, 18.115, 18.135),
+        (18.145, 18.145, 18.110, 18.135),
+        (18.125, 18.160, 18.125, 18.160),
+        (18.155, 18.175, 18.155, 18.175),
+        (18.165, 18.185, 18.165, 18.175),
+        (18.175, 18.200, 18.170, 18.190),
+    )
+    for offset, values in enumerate(actual, start=8):
+        open_[offset], high[offset], low[offset], close[offset] = values
+    frame = pd.DataFrame(
+        {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "atr_14": np.full(24, 0.0332),
+            "ema_fast": np.full(24, 18.160),
+            "ema_slow": np.full(24, 18.145),
+            "rsi_14": np.full(24, 58.7),
+        },
+        index=index,
+    )
+
+    continuation = _microtrend_continuation(frame, spread_percent=0.22)
+
+    assert continuation.active is True
+    assert continuation.event == MICROTREND_CONTINUATION_EVENT
+    assert continuation.breakout_level == 18.185
+    assert continuation.stop_loss < 18.170
+    assert continuation.target > 18.50
+
+
+def test_profit_exhaustion_requires_red_reversal_after_extreme_rsi():
+    frame = pd.DataFrame(
+        {
+            "open": [18.42, 18.45, 18.47, 18.49, 18.505],
+            "high": [18.46, 18.48, 18.50, 18.52, 18.505],
+            "low": [18.41, 18.44, 18.46, 18.48, 18.45],
+            "close": [18.45, 18.47, 18.49, 18.515, 18.49],
+            "atr_14": [0.04] * 5,
+            "rsi_14": [74.0, 78.0, 80.4, 82.3, 74.6],
+        },
+        index=pd.date_range("2026-08-14 16:16:00Z", periods=5, freq="1min"),
+    )
+
+    assert _profit_exhaustion(frame) is True
 
 
 def _frames(now: datetime, *, bearish: bool = False) -> dict[str, pd.DataFrame]:
