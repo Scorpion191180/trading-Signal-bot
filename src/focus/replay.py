@@ -129,7 +129,7 @@ def replay_focus_day(
     hourly: pd.DataFrame,
     daily: pd.DataFrame,
     selected_date: date | None = None,
-    confirmation_observations: int = 3,
+    confirmation_observations: int = 2,
 ) -> FocusReplayResult:
     """Spielt v2 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
 

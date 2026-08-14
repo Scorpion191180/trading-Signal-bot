@@ -30,7 +30,7 @@ LOGGER = logging.getLogger(__name__)
 BOT_KEY = "dwave-paper"
 ACTIVE_POLL_SECONDS = 10
 IDLE_POLL_SECONDS = 60
-ENTRY_CONFIRMATION_CYCLES = 3
+ENTRY_CONFIRMATION_CYCLES = 2
 BERLIN = ZoneInfo("Europe/Berlin")
 HISTORY_TTL_SECONDS = {60: 10, 300: 60, 3600: 300, 86400: 900}
 
@@ -160,7 +160,7 @@ class FocusPaperWorker:
         return minute, frames
 
     def _entry_confirmed(self, signal: IntradaySignal, signal_at: datetime) -> bool:
-        """Verlangt drei gleiche Messungen innerhalb des neuen Fuenf-Minuten-Blocks."""
+        """Verlangt zwei gleiche Messungen innerhalb des neuen Fuenf-Minuten-Blocks."""
 
         timestamp = _aware_bucket_timestamp(signal_at)
         bucket = timestamp.strftime("%Y%m%dT%H%MZ")

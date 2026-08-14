@@ -131,11 +131,9 @@ def test_worker_executes_paper_order_and_persists_heartbeat(store, monkeypatch):
     worker = FocusPaperWorker(store, provider=FakeStock3Provider(now), clock=lambda: now)
 
     first = worker.run_once()
-    second = worker.run_once()
     cycle = worker.run_once()
 
     assert first is not None and first.account.state == "WARTET · BESTÄTIGUNG"
-    assert second is not None and second.account.state == "WARTET · BESTÄTIGUNG"
     assert cycle is not None
     assert cycle.account.state == "INVESTIERT"
     portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)

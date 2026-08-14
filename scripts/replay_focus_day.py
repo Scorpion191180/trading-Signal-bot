@@ -14,7 +14,7 @@ def main() -> None:
     parser.add_argument(
         "--confirmation-observations",
         type=int,
-        default=3,
+        default=2,
         help="Historische Minutenbeobachtungen, die ein BUY bestätigen müssen",
     )
     args = parser.parse_args()

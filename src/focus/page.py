@@ -487,13 +487,15 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
     last_at = pd.Timestamp(summary["last_candle_at"]).tz_convert("Europe/Berlin")
     completed = int(summary["completed_trades"])
     costs = float(summary["transaction_costs"])
+    confirmations = int(summary["confirmation_observations"])
     note = "kein vollständiges v2-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
     st.markdown(
         '<div class="replay-summary-bar"><label>TAGES-REPLAY V2</label>'
         f'<b>{first_at:%H:%M}–{last_at:%H:%M}</b>'
         f'<strong style="color:{color}">{pnl:+.2f} € ({float(summary["pnl_percent"]):+.2f} %)</strong>'
         f'<span>Depot {float(summary["ending_equity"]):.2f} €</span>'
-        f'<span>Kosten {costs:.2f} €</span><small>{note} · echte historische L&S-Bid/Ask-Minuten</small>'
+        f'<span>Kosten {costs:.2f} €</span><small>{note} · {confirmations} Bestätigungen · '
+        'echte historische L&S-Bid/Ask-Minuten</small>'
         '</div>',
         unsafe_allow_html=True,
     )
