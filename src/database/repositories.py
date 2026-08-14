@@ -245,6 +245,9 @@ class DataStore:
                 )
                 session.add(portfolio)
                 session.flush()
+            else:
+                portfolio.strategy = strategy
+                portfolio.strategy_version = strategy_version
             return portfolio
 
     def get_portfolio(self, portfolio_id: int) -> VirtualPortfolio:
@@ -335,6 +338,7 @@ class DataStore:
         fee: float | None = None,
         spread_pct: float | None = None,
         slippage_pct: float | None = None,
+        executed_at: datetime | None = None,
     ) -> VirtualOrder:
         key = idempotency_key or str(uuid.uuid4())
         with self.sessions.begin() as session:
@@ -381,6 +385,7 @@ class DataStore:
                 signal_score=signal_score,
                 provider=provider,
                 is_demo=is_demo,
+                executed_at=executed_at or datetime.now(UTC),
             )
             session.add(order)
             session.add(
@@ -401,6 +406,7 @@ class DataStore:
                     entry_news_factor=news_factor,
                     entry_news_ids=",".join(news_ids),
                     is_demo=is_demo,
+                    opened_at=executed_at or datetime.now(UTC),
                 )
             )
             session.flush()
@@ -423,6 +429,7 @@ class DataStore:
         fee: float | None = None,
         spread_pct: float | None = None,
         slippage_pct: float | None = None,
+        executed_at: datetime | None = None,
     ) -> VirtualOrder:
         key = idempotency_key or str(uuid.uuid4())
         with self.sessions.begin() as session:
@@ -471,6 +478,7 @@ class DataStore:
                 signal_score=signal_score,
                 provider=provider,
                 is_demo=is_demo,
+                executed_at=executed_at or datetime.now(UTC),
             )
             session.add(order)
             session.add(
@@ -501,6 +509,7 @@ class DataStore:
                     entry_news_ids=position.entry_news_ids,
                     exit_news_ids=",".join(news_ids),
                     is_demo=is_demo,
+                    exit_time=executed_at or datetime.now(UTC),
                 )
             )
             position.quantity -= sell_quantity
@@ -584,12 +593,13 @@ class DataStore:
         market_regime: str,
         strategy_votes: tuple[str, ...],
         spread_percent: float,
+        model_version: str = "focus-market-v1",
     ) -> tuple[FocusForecast, bool]:
         """Speichert höchstens eine unveränderliche Prognose pro Fünf-Minuten-Block."""
 
         timestamp = _aware_utc(forecast_at).replace(second=0, microsecond=0)
         bucket = timestamp.replace(minute=timestamp.minute - timestamp.minute % 5)
-        key = f"{symbol.upper().strip()}:{provider}:{bucket:%Y%m%dT%H%MZ}"
+        key = f"{symbol.upper().strip()}:{provider}:{model_version}:{bucket:%Y%m%dT%H%MZ}"
         with self.sessions.begin() as session:
             existing = session.scalar(select(FocusForecast).where(FocusForecast.forecast_key == key))
             if existing is not None:
@@ -598,6 +608,7 @@ class DataStore:
                 forecast_key=key,
                 symbol=symbol.upper().strip(),
                 provider=provider,
+                model_version=model_version,
                 forecast_at=forecast_at,
                 entry_price=entry_price,
                 bid=bid,
@@ -688,6 +699,7 @@ class DataStore:
         symbol: str,
         horizon_minutes: int = 15,
         limit: int = 200,
+        model_version: str | None = None,
     ) -> dict[str, float | int | None]:
         """Liefert rein vorwärts gemessene Kennzahlen ohne nachträgliche Neuberechnung."""
 
@@ -695,22 +707,25 @@ class DataStore:
             raise ValueError("Dieser Prognosehorizont wird nicht unterstützt.")
         normalized = symbol.upper().strip()
         with self.sessions() as session:
-            recorded = int(
-                session.scalar(
-                    select(func.count()).select_from(FocusForecast).where(FocusForecast.symbol == normalized)
-                )
-                or 0
+            recorded_query = select(func.count()).select_from(FocusForecast).where(
+                FocusForecast.symbol == normalized
             )
+            if model_version is not None:
+                recorded_query = recorded_query.where(FocusForecast.model_version == model_version)
+            recorded = int(session.scalar(recorded_query) or 0)
+            outcome_query = (
+                select(FocusForecastOutcome)
+                .join(FocusForecast, FocusForecast.id == FocusForecastOutcome.forecast_id)
+                .where(
+                    FocusForecast.symbol == normalized,
+                    FocusForecastOutcome.horizon_minutes == horizon_minutes,
+                )
+            )
+            if model_version is not None:
+                outcome_query = outcome_query.where(FocusForecast.model_version == model_version)
             outcomes = list(
                 session.scalars(
-                    select(FocusForecastOutcome)
-                    .join(FocusForecast, FocusForecast.id == FocusForecastOutcome.forecast_id)
-                    .where(
-                        FocusForecast.symbol == normalized,
-                        FocusForecastOutcome.horizon_minutes == horizon_minutes,
-                    )
-                    .order_by(FocusForecastOutcome.observed_at.desc())
-                    .limit(limit)
+                    outcome_query.order_by(FocusForecastOutcome.observed_at.desc()).limit(limit)
                 )
             )
         completed = len(outcomes)

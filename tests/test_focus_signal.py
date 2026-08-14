@@ -6,7 +6,16 @@ import numpy as np
 import pandas as pd
 
 from src.data import MarketDataRequest
-from src.focus.analysis import FocusPosition, analyze_timeframes, build_intraday_signal, build_market_signal
+from src.focus.analysis import (
+    SPEC_BY_KEY,
+    FocusPosition,
+    _rolling_linear_regression,
+    _smart_money_context,
+    add_focus_indicators,
+    analyze_timeframes,
+    build_intraday_signal,
+    build_market_signal,
+)
 from src.focus.data import load_dwave_timeframes, resample_ohlcv
 
 FREQUENCIES = {
@@ -27,6 +36,39 @@ FREQUENCY_DURATIONS = {
     "1wk": timedelta(days=7),
     "1mo": timedelta(days=30),
 }
+
+
+def test_vectorized_linear_regression_matches_direct_window_calculation():
+    series = pd.Series(np.linspace(10, 12, 40) + np.sin(np.arange(40) / 3))
+    actual = _rolling_linear_regression(series, 11)
+    expected = series.rolling(11).apply(
+        lambda values: np.polyfit(np.arange(11), values, 1)[0] * 10
+        + np.polyfit(np.arange(11), values, 1)[1],
+        raw=True,
+    )
+    assert np.allclose(actual.dropna(), expected.dropna())
+
+
+def test_liquidity_sweep_then_displacement_confirms_bullish_structure_change():
+    index = pd.date_range("2026-08-14 08:00:00Z", periods=36, freq="5min")
+    close = np.full(36, 10.0)
+    open_ = np.full(36, 10.0)
+    high = np.full(36, 10.05)
+    low = np.full(36, 9.95)
+    open_[34], close[34], high[34], low[34] = 10.02, 10.0, 10.03, 9.78
+    open_[35], close[35], high[35], low[35] = 10.0, 10.32, 10.34, 9.99
+    frame = pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": 1_000.0},
+        index=index,
+    )
+
+    context = _smart_money_context(add_focus_indicators(frame, SPEC_BY_KEY["5m"]))
+
+    assert context.bullish_reversal is True
+    assert context.bearish_reversal is False
+    assert context.demand_low is not None
+    assert context.demand_high is not None
+    assert "bullischer Strukturwechsel" in context.event
 
 
 def _frames(now: datetime, *, bearish: bool = False) -> dict[str, pd.DataFrame]:
@@ -84,7 +126,10 @@ def test_short_term_confirmation_creates_buy_and_profitable_add_signal():
     assert buy.stop_loss < buy.current_price < buy.target
     assert buy.forecast_direction == "EHER STEIGEND"
     assert buy.forecast_low < buy.current_price < buy.forecast_high
-    assert len(buy.strategy_votes) == 5
+    assert len(buy.strategy_votes) == 7
+    assert [item.minutes for item in buy.trend_forecasts] == [5, 15, 30]
+    assert all(item.expected_low < item.expected_price < item.expected_high for item in buy.trend_forecasts)
+    assert any("OTT/UT" in vote for vote in buy.strategy_votes)
 
 
 def test_add_signal_does_not_average_down():

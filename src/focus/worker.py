@@ -22,7 +22,7 @@ from src.database import DataStore, create_database, create_session_factory
 
 from .analysis import DWAVE_INSTRUMENT, IntradaySignal, analyze_timeframes, build_market_signal
 from .data import resample_ohlcv
-from .paper import PaperAccount, current_paper_account, run_paper_account
+from .paper import PAPER_STRATEGY_VERSION, PaperAccount, current_paper_account, run_paper_account
 from .quote import LiveQuote, resample_intraday_candles
 from .stock3 import Stock3LangSchwarzProvider
 
@@ -30,6 +30,7 @@ LOGGER = logging.getLogger(__name__)
 BOT_KEY = "dwave-paper"
 ACTIVE_POLL_SECONDS = 10
 IDLE_POLL_SECONDS = 60
+ENTRY_CONFIRMATION_CYCLES = 3
 BERLIN = ZoneInfo("Europe/Berlin")
 HISTORY_TTL_SECONDS = {60: 10, 300: 60, 3600: 300, 86400: 900}
 
@@ -55,6 +56,12 @@ def session_is_active(now: datetime) -> bool:
     local = now.astimezone(BERLIN)
     local_time = local.time().replace(tzinfo=None)
     return local.weekday() < 5 and time(7, 30) <= local_time <= time(23, 0)
+
+
+def _aware_bucket_timestamp(value: datetime) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    timestamp = timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+    return timestamp.floor("5min")
 
 
 def _latest_trading_day(frame: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
@@ -89,6 +96,21 @@ def _latest_trading_day(frame: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
     return completed
 
 
+def _completed_candles(frame: pd.DataFrame, resolution_seconds: int, as_of: datetime) -> pd.DataFrame:
+    """Entfernt die noch laufende Kerze, damit der Bot nur bestaetigte Schlusskurse handelt."""
+
+    if frame.empty:
+        return frame.copy()
+    timestamp = pd.Timestamp(as_of)
+    timestamp = timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+    epoch_seconds = int(timestamp.timestamp())
+    cutoff_seconds = epoch_seconds - epoch_seconds % resolution_seconds - resolution_seconds
+    cutoff = pd.Timestamp(cutoff_seconds, unit="s", tz="UTC")
+    completed = frame.loc[frame.index <= cutoff].copy()
+    completed.attrs.update(frame.attrs)
+    return completed
+
+
 class FocusPaperWorker:
     """Analysiert L&S im Hintergrund und ist der einzige Schreiber von Papierorders."""
 
@@ -103,6 +125,8 @@ class FocusPaperWorker:
         self.provider = provider or Stock3LangSchwarzProvider()
         self.clock = clock or (lambda: datetime.now(UTC))
         self._history_cache: dict[int, tuple[float, pd.DataFrame]] = {}
+        self._entry_candidate_bucket: str | None = None
+        self._entry_candidate_cycles = 0
 
     def _history(self, resolution_seconds: int) -> pd.DataFrame:
         cached = self._history_cache.get(resolution_seconds)
@@ -115,7 +139,8 @@ class FocusPaperWorker:
 
     def _frames(self, quote: LiveQuote) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
         minute = _latest_trading_day(self._history(60), quote)
-        five_minutes = self._history(300)
+        signal_at = quote.quoted_at or quote.fetched_at
+        five_minutes = _completed_candles(self._history(300), 300, signal_at)
         hourly = self._history(3600)
         daily = self._history(86400)
         frames = {
@@ -128,6 +153,22 @@ class FocusPaperWorker:
             "1mo": resample_ohlcv(daily, "ME", drop_future_label=True),
         }
         return minute, frames
+
+    def _entry_confirmed(self, signal: IntradaySignal, signal_at: datetime) -> bool:
+        """Verlangt drei gleiche Messungen innerhalb des neuen Fuenf-Minuten-Blocks."""
+
+        timestamp = _aware_bucket_timestamp(signal_at)
+        bucket = timestamp.strftime("%Y%m%dT%H%MZ")
+        if signal.action != "BUY":
+            self._entry_candidate_bucket = None
+            self._entry_candidate_cycles = 0
+            return False
+        if bucket != self._entry_candidate_bucket:
+            self._entry_candidate_bucket = bucket
+            self._entry_candidate_cycles = 1
+        else:
+            self._entry_candidate_cycles += 1
+        return self._entry_candidate_cycles >= ENTRY_CONFIRMATION_CYCLES
 
     def _record_forecast(self, candles: pd.DataFrame, quote: LiveQuote, signal: IntradaySignal) -> None:
         observations = [
@@ -159,6 +200,7 @@ class FocusPaperWorker:
                 market_regime=signal.market_regime,
                 strategy_votes=signal.strategy_votes,
                 spread_percent=signal.spread_percent or 0.0,
+                model_version=PAPER_STRATEGY_VERSION,
             )
 
     def pause(self, now: datetime) -> None:
@@ -227,7 +269,13 @@ class FocusPaperWorker:
             enforce_liquidity_filter=False,
         )
         signal_at = quote.quoted_at or quote.fetched_at
-        account = run_paper_account(self.store, quote, signal, signal_at=signal_at)
+        account = run_paper_account(
+            self.store,
+            quote,
+            signal,
+            signal_at=signal_at,
+            entry_confirmed=self._entry_confirmed(signal, signal_at),
+        )
         self._record_forecast(candles, quote, signal)
         self.store.update_focus_bot_status(
             bot_key=BOT_KEY,

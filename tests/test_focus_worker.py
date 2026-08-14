@@ -70,7 +70,7 @@ def _buy_signal() -> IntradaySignal:
         entry_low=17.98,
         entry_high=18.02,
         stop_loss=17.5,
-        target=19.0,
+        target=19.2,
         holding_period="5–30 Minuten",
         reasons=(),
         warning="",
@@ -130,8 +130,12 @@ def test_worker_executes_paper_order_and_persists_heartbeat(store, monkeypatch):
     monkeypatch.setattr("src.focus.worker.build_market_signal", lambda *_args, **_kwargs: _buy_signal())
     worker = FocusPaperWorker(store, provider=FakeStock3Provider(now), clock=lambda: now)
 
+    first = worker.run_once()
+    second = worker.run_once()
     cycle = worker.run_once()
 
+    assert first is not None and first.account.state == "WARTET · BESTÄTIGUNG"
+    assert second is not None and second.account.state == "WARTET · BESTÄTIGUNG"
     assert cycle is not None
     assert cycle.account.state == "INVESTIERT"
     portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)

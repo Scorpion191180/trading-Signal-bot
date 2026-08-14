@@ -132,6 +132,34 @@ def test_focus_forecast_is_deduplicated_and_only_resolved_with_future_prices(sto
     assert outcomes[-1].zone_hit is False
 
 
+def test_focus_forecast_metrics_keep_strategy_versions_separate(store):
+    forecast_at = datetime(2026, 8, 13, 8, 1, tzinfo=UTC)
+    arguments = {
+        "symbol": "RQ0",
+        "provider": "Lang & Schwarz",
+        "forecast_at": forecast_at,
+        "entry_price": 10.0,
+        "bid": 9.99,
+        "ask": 10.01,
+        "direction": "EHER STEIGEND",
+        "model_score": 64.0,
+        "forecast_low": 9.8,
+        "forecast_high": 10.2,
+        "market_regime": "Trend",
+        "strategy_votes": ("Trend 70 ↑",),
+        "spread_percent": 0.2,
+    }
+
+    old, old_inserted = store.record_focus_forecast(**arguments, model_version="focus-market-v1")
+    new, new_inserted = store.record_focus_forecast(**arguments, model_version="focus-market-v2")
+
+    assert old_inserted is True
+    assert new_inserted is True
+    assert old.id != new.id
+    assert store.focus_forecast_metrics(symbol="RQ0", model_version="focus-market-v1")["recorded"] == 1
+    assert store.focus_forecast_metrics(symbol="RQ0", model_version="focus-market-v2")["recorded"] == 1
+
+
 def test_virtual_buy_sell_and_journal(store):
     portfolio = next(value for value in store.list_portfolios() if value.name == "Normal")
     order = store.open_position(

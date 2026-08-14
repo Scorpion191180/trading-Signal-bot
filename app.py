@@ -58,6 +58,16 @@ st.markdown(
     .paper-account-bar b {color: #f1f5f6; letter-spacing: .025em;}
     .paper-account-bar span {padding-left: .65rem; border-left: 1px solid #344147;}
     .paper-account-bar small {margin-left: auto; color: #77878d; font-size: .59rem;}
+    .trend-forecast-bar {
+      display: flex; align-items: center; gap: .75rem; padding: .3rem .55rem; margin: .2rem 0;
+      border: 1px solid #2d3a3f; border-radius: .4rem; background: #11191d; font-size: .68rem;
+    }
+    .trend-forecast-bar label {color: #829198; font-size: .58rem; letter-spacing: .06em; white-space: nowrap;}
+    .trend-forecast-cell {display: inline-flex; align-items: baseline; gap: .28rem; padding-left: .65rem; border-left: 1px solid #344147;}
+    .trend-forecast-cell b, .trend-forecast-cell strong {color: #e5eaec; white-space: nowrap;}
+    .trend-forecast-cell em {font-style: normal; font-weight: 700; white-space: nowrap;}
+    .trend-forecast-cell small {color: #78878d; white-space: nowrap;}
+    .trend-forecast-bar i {margin-left: auto; color: #69777d; font-size: .56rem; white-space: nowrap;}
     [data-testid="stButtonGroup"] button {
       min-height: 1.5rem !important; height: 1.5rem !important; border-radius: .28rem !important;
       padding: .05rem .32rem !important; font-size: .61rem !important; white-space: nowrap !important;
@@ -85,6 +95,8 @@ st.markdown(
       .instrument-name {font-size: .95rem;}
       .live-price {font-size: .9rem;}
       .paper-account-bar small {margin-left: 0; width: 100%;}
+      .trend-forecast-bar {flex-wrap: wrap; gap: .4rem;}
+      .trend-forecast-bar i {margin-left: 0;}
       div[data-testid="stHorizontalBlock"] {gap: .4rem;}
     }
     </style>

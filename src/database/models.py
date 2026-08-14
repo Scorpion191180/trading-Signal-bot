@@ -177,6 +177,7 @@ class FocusForecast(Base):
     forecast_key: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True)
     provider: Mapped[str] = mapped_column(String(80))
+    model_version: Mapped[str] = mapped_column(String(30), default="focus-market-v1", index=True)
     forecast_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     entry_price: Mapped[float] = mapped_column(Float)
     bid: Mapped[float] = mapped_column(Float)

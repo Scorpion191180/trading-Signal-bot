@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from src.database import DataStore
-from src.database.models import VirtualPortfolio, VirtualPosition
+from src.database.models import Trade, VirtualPortfolio, VirtualPosition
 from src.database.repositories import DuplicateOrderError, PortfolioError
 
 from .analysis import DWAVE_INSTRUMENT, IntradaySignal
@@ -19,7 +20,19 @@ PAPER_STARTING_CAPITAL = 2_000.0
 TRADE_REPUBLIC_ORDER_FEE = 1.0
 PAPER_SLIPPAGE_PCT = 0.0005
 PAPER_MAX_SPREAD_PERCENT = 0.6
-PAPER_STRATEGY_VERSION = "focus-market-v1"
+PAPER_STRATEGY_VERSION = "focus-market-v2"
+PAPER_MAX_CAPITAL_FRACTION = 0.50
+PAPER_RISK_PER_TRADE = 0.0075
+PAPER_MIN_NET_EDGE_PCT = 0.002
+PAPER_MIN_REWARD_RISK = 1.35
+PAPER_MAX_TRADES_PER_DAY = 4
+PAPER_MAX_CONSECUTIVE_LOSSES = 2
+PAPER_DAILY_LOSS_LIMIT = 0.015
+PAPER_COOLDOWN_MINUTES = 15
+PAPER_STOP_COOLDOWN_MINUTES = 30
+PAPER_MIN_SIGNAL_EXIT_MINUTES = 5
+PAPER_MAX_HOLD_MINUTES = 30
+BERLIN = ZoneInfo("Europe/Berlin")
 
 
 @dataclass(frozen=True)
@@ -71,10 +84,87 @@ def _execution_costs(quote: LiveQuote) -> tuple[float, float, float]:
     return TRADE_REPUBLIC_ORDER_FEE, spread_pct, PAPER_SLIPPAGE_PCT
 
 
-def _maximum_quantity(cash: float, quote: LiveQuote) -> float:
+def _aware_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _execution_price(side: str, midpoint: float, spread_pct: float, slippage_pct: float) -> float:
+    direction = 1 if side == "BUY" else -1
+    return midpoint * (1 + direction * (spread_pct / 2 + slippage_pct))
+
+
+def _exit_execution_at_bid(bid: float, quote: LiveQuote, spread_pct: float, slippage_pct: float) -> float:
+    assumed_midpoint = bid + quote.spread / 2
+    return _execution_price("SELL", assumed_midpoint, spread_pct, slippage_pct)
+
+
+def _entry_plan(
+    portfolio: VirtualPortfolio,
+    quote: LiveQuote,
+    signal: IntradaySignal,
+) -> tuple[float, float, float] | str:
+    """Prueft erst die Nettorendite und bestimmt dann eine risikobegrenzte Stueckzahl."""
+
+    if signal.stop_loss is None or signal.target is None:
+        return "WARTET · SCHUTZMARKEN"
     fee, spread_pct, slippage_pct = _execution_costs(quote)
-    execution_price = quote.midpoint * (1 + spread_pct / 2 + slippage_pct)
-    return max((cash - fee) / execution_price, 0.0)
+    entry_execution = _execution_price("BUY", quote.midpoint, spread_pct, slippage_pct)
+    target_execution = _exit_execution_at_bid(signal.target, quote, spread_pct, slippage_pct)
+    stop_execution = _exit_execution_at_bid(signal.stop_loss, quote, spread_pct, slippage_pct)
+    reward_per_share = target_execution - entry_execution
+    risk_per_share = entry_execution - stop_execution
+    if reward_per_share <= 0 or risk_per_share <= 0:
+        return "WARTET · KOSTEN"
+
+    equity = portfolio.cash
+    capital_limit = min(portfolio.cash, equity * PAPER_MAX_CAPITAL_FRACTION)
+    affordable_quantity = max((capital_limit - fee) / entry_execution, 0.0)
+    loss_budget = max(equity * PAPER_RISK_PER_TRADE - 2 * fee, 0.0)
+    risk_quantity = loss_budget / risk_per_share if risk_per_share > 0 else 0.0
+    quantity = min(affordable_quantity, risk_quantity)
+    if quantity <= 0:
+        return "WARTET · RISIKOLIMIT"
+
+    net_reward = reward_per_share * quantity - 2 * fee
+    net_risk = risk_per_share * quantity + 2 * fee
+    invested_value = entry_execution * quantity
+    minimum_net_reward = invested_value * PAPER_MIN_NET_EDGE_PCT
+    if net_reward < minimum_net_reward or net_reward / net_risk < PAPER_MIN_REWARD_RISK:
+        return "WARTET · KOSTEN"
+    return quantity, signal.stop_loss, signal.target
+
+
+def _today_trades(store: DataStore, portfolio_id: int, signal_at: datetime) -> list[Trade]:
+    trading_date = _aware_utc(signal_at).astimezone(BERLIN).date()
+    result = []
+    for trade in store.list_trades(portfolio_id):
+        exit_time = _aware_utc(trade.exit_time)
+        if exit_time.astimezone(BERLIN).date() == trading_date:
+            result.append(trade)
+    return result
+
+
+def _entry_guard(store: DataStore, portfolio: VirtualPortfolio, signal_at: datetime) -> str | None:
+    trades = _today_trades(store, portfolio.id, signal_at)
+    if len(trades) >= PAPER_MAX_TRADES_PER_DAY:
+        return "WARTET · TAGESLIMIT"
+    if sum(float(trade.pnl_eur) for trade in trades) <= -portfolio.initial_capital * PAPER_DAILY_LOSS_LIMIT:
+        return "WARTET · VERLUSTLIMIT"
+
+    consecutive_losses = 0
+    for trade in trades:
+        if trade.pnl_eur < 0:
+            consecutive_losses += 1
+        else:
+            break
+    if consecutive_losses >= PAPER_MAX_CONSECUTIVE_LOSSES:
+        return "WARTET · VERLUSTPAUSE"
+    if trades:
+        latest = trades[0]
+        cooldown = PAPER_STOP_COOLDOWN_MINUTES if "Stop-Loss" in latest.exit_reason else PAPER_COOLDOWN_MINUTES
+        if _aware_utc(signal_at) < _aware_utc(latest.exit_time) + timedelta(minutes=cooldown):
+            return f"WARTET · {cooldown} MIN PAUSE"
+    return None
 
 
 def run_paper_account(
@@ -83,6 +173,7 @@ def run_paper_account(
     signal: IntradaySignal,
     *,
     signal_at: datetime,
+    entry_confirmed: bool = True,
 ) -> PaperAccount:
     """Bucht nur neue Vorwärtssignale; vorhandene Chartgeschichte wird nie nachträglich gehandelt."""
 
@@ -91,6 +182,7 @@ def run_paper_account(
     provider = f"{quote.venue} · {quote.provider} · Trade-Republic-Kostenmodell"
     fee, spread_pct, slippage_pct = _execution_costs(quote)
     execution_allowed = signal.market_open and signal.data_age_minutes <= 4
+    waiting_state: str | None = None
     if position is not None:
         store.update_market_price(
             portfolio.id,
@@ -110,16 +202,23 @@ def run_paper_account(
             and signal.stop_loss
             and signal.target
         ):
-            quantity = _maximum_quantity(portfolio.cash, quote)
-            if quantity > 0:
+            if not entry_confirmed:
+                waiting_state = "WARTET · BESTÄTIGUNG"
+            else:
+                waiting_state = _entry_guard(store, portfolio, signal_at)
+            plan = _entry_plan(portfolio, quote, signal) if waiting_state is None else waiting_state
+            if isinstance(plan, str):
+                waiting_state = plan
+            else:
+                quantity, stop_loss, take_profit = plan
                 store.open_position(
                     portfolio_id=portfolio.id,
                     symbol=DWAVE_INSTRUMENT.exchange_symbol,
                     quantity=quantity,
                     market_price=quote.midpoint,
-                    stop_loss=signal.stop_loss,
-                    take_profit=signal.target,
-                    reason="Neutrales KAUFEN-Signal · 5–30 Minuten",
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    reason="Bestätigtes KAUFEN · BOS/OTT/UT/LinReg · Kostenhürde bestanden",
                     signal_score=signal.score,
                     weight_version=PAPER_STRATEGY_VERSION,
                     provider=provider,
@@ -128,6 +227,7 @@ def run_paper_account(
                     fee=fee,
                     spread_pct=spread_pct,
                     slippage_pct=slippage_pct,
+                    executed_at=_aware_utc(signal_at),
                 )
                 store.update_market_price(
                     portfolio.id,
@@ -136,14 +236,24 @@ def run_paper_account(
                     provider=provider,
                     is_demo=False,
                 )
-        elif position is not None and execution_allowed:
+        elif position is not None and signal.market_open:
             exit_reason = None
+            held_minutes = (
+                _aware_utc(signal_at) - _aware_utc(position.opened_at)
+            ).total_seconds() / 60
             if quote.bid <= position.stop_loss:
                 exit_reason = "Stop-Loss erreicht"
             elif quote.bid >= position.take_profit:
-                exit_reason = "Technisches Ziel erreicht"
-            elif signal.action == "SELL":
-                exit_reason = "Neutrales VERKAUFEN-Signal · kurzfristiger Trend gekippt"
+                exit_reason = "Kostenbereinigtes technisches Ziel erreicht"
+            elif held_minutes >= PAPER_MAX_HOLD_MINUTES:
+                exit_reason = "Zeitlimit 30 Minuten erreicht"
+            elif (
+                execution_allowed
+                and held_minutes >= PAPER_MIN_SIGNAL_EXIT_MINUTES
+                and signal.action == "SELL"
+                and signal.score <= 38
+            ):
+                exit_reason = "Bestätigtes VERKAUFEN · kurzfristiger Trend gekippt"
             if exit_reason:
                 store.close_position(
                     portfolio_id=portfolio.id,
@@ -157,10 +267,13 @@ def run_paper_account(
                     fee=fee,
                     spread_pct=spread_pct,
                     slippage_pct=slippage_pct,
+                    executed_at=_aware_utc(signal_at),
                 )
     except (DuplicateOrderError, PortfolioError):
         pass
     account = paper_account(store, portfolio.id, quote.bid)
+    if waiting_state is not None:
+        return replace(account, state=waiting_state)
     if position is None and signal.action == "BUY" and quote.spread_percent > PAPER_MAX_SPREAD_PERCENT:
         return replace(account, state="WARTET · SPREAD")
     return account
@@ -212,12 +325,24 @@ def paper_order_events(
     trading_timestamp: pd.Timestamp,
 ) -> list[dict[str, object]]:
     trading_date = trading_timestamp.tz_convert("Europe/Berlin").date()
-    events: list[dict[str, object]] = []
+    day_orders = []
     for order in reversed(store.list_orders(portfolio_id, limit=100)):
         timestamp = pd.Timestamp(order.executed_at)
         timestamp = timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
-        if timestamp.tz_convert("Europe/Berlin").date() != trading_date:
-            continue
+        if timestamp.tz_convert("Europe/Berlin").date() == trading_date:
+            day_orders.append((order, timestamp))
+    first_v2 = next(
+        (
+            index
+            for index, (order, _timestamp) in enumerate(day_orders)
+            if order.reason.startswith("Bestätigtes KAUFEN")
+        ),
+        None,
+    )
+    if first_v2 is None:
+        return []
+    events: list[dict[str, object]] = []
+    for order, timestamp in day_orders[first_v2:]:
         events.append(
             {
                 "action": order.side,

@@ -100,6 +100,24 @@ class IntradaySignal:
     market_regime: str = "unklar"
     strategy_votes: tuple[str, ...] = ()
     spread_percent: float | None = None
+    trend_forecasts: tuple[TrendForecast, ...] = ()
+    demand_low: float | None = None
+    demand_high: float | None = None
+    liquidity_low: float | None = None
+    liquidity_high: float | None = None
+    structure_event: str = ""
+
+
+@dataclass(frozen=True)
+class TrendForecast:
+    """Probabilistische Kurszone fuer einen festen, kurzen Vorwaertshorizont."""
+
+    minutes: int
+    direction: str
+    expected_price: float
+    expected_low: float
+    expected_high: float
+    confidence: float
 
 
 @dataclass(frozen=True)
@@ -114,6 +132,101 @@ class StrategyEnsemble:
     votes: tuple[str, ...]
     positive_votes: int
     negative_votes: int
+    horizons: tuple[TrendForecast, ...]
+
+
+@dataclass(frozen=True)
+class SmartMoneyContext:
+    """Messbare Teilmenge der SMC-Bilder ohne nachtraeglich subjektives Einzeichnen."""
+
+    bullish_reversal: bool
+    bearish_reversal: bool
+    demand_retest: bool
+    demand_low: float | None
+    demand_high: float | None
+    liquidity_low: float | None
+    liquidity_high: float | None
+    event: str
+
+
+def _rolling_linear_regression(series: pd.Series, length: int = 11) -> pd.Series:
+    """Letzter Wert einer rollenden linearen Regression ohne Blick in die Zukunft."""
+
+    values = series.to_numpy(dtype=float)
+    result = np.full(len(values), np.nan, dtype=float)
+    if len(values) < length:
+        return pd.Series(result, index=series.index)
+    x_values = np.arange(length, dtype=float)
+    sum_x = float(x_values.sum())
+    sum_x_squared = float(np.square(x_values).sum())
+    denominator = length * sum_x_squared - sum_x**2
+    rolling_sum = np.convolve(values, np.ones(length), mode="valid")
+    rolling_weighted_sum = np.convolve(values, x_values[::-1], mode="valid")
+    slopes = (length * rolling_weighted_sum - sum_x * rolling_sum) / denominator
+    means = rolling_sum / length
+    projected = means + slopes * ((length - 1) - sum_x / length)
+    result[length - 1 :] = projected
+    return pd.Series(result, index=series.index)
+
+
+def _atr_trailing_stop(close: pd.Series, atr_values: pd.Series, multiplier: float = 2.0) -> pd.Series:
+    """UT-Bot-inspirierter ATR-Trailing-Stop auf normalen Schlusskursen."""
+
+    stops = np.full(len(close), np.nan, dtype=float)
+    values = close.to_numpy(dtype=float)
+    losses = (atr_values * multiplier).to_numpy(dtype=float)
+    for index, current in enumerate(values):
+        loss = losses[index]
+        if not np.isfinite(current) or not np.isfinite(loss) or loss <= 0:
+            continue
+        if index == 0 or not np.isfinite(stops[index - 1]):
+            stops[index] = current - loss
+            continue
+        previous_stop = stops[index - 1]
+        previous_close = values[index - 1]
+        if current > previous_stop and previous_close > previous_stop:
+            stops[index] = max(previous_stop, current - loss)
+        elif current < previous_stop and previous_close < previous_stop:
+            stops[index] = min(previous_stop, current + loss)
+        elif current > previous_stop:
+            stops[index] = current - loss
+        else:
+            stops[index] = current + loss
+    return pd.Series(stops, index=close.index)
+
+
+def _ott_line(support: pd.Series, percent: float = 1.4) -> pd.Series:
+    """OTT/MOST-Trendlinie entsprechend dem im Video sichtbaren 1,4-%-Abstand."""
+
+    values = support.to_numpy(dtype=float)
+    long_stop = np.full(len(values), np.nan, dtype=float)
+    short_stop = np.full(len(values), np.nan, dtype=float)
+    direction = np.ones(len(values), dtype=float)
+    ott = np.full(len(values), np.nan, dtype=float)
+    ratio = percent / 100.0
+    for index, current in enumerate(values):
+        if not np.isfinite(current):
+            continue
+        raw_long = current * (1 - ratio)
+        raw_short = current * (1 + ratio)
+        if index == 0 or not np.isfinite(long_stop[index - 1]):
+            long_stop[index] = raw_long
+            short_stop[index] = raw_short
+        else:
+            previous_support = values[index - 1]
+            previous_long = long_stop[index - 1]
+            previous_short = short_stop[index - 1]
+            long_stop[index] = max(raw_long, previous_long) if previous_support > previous_long else raw_long
+            short_stop[index] = min(raw_short, previous_short) if previous_support < previous_short else raw_short
+            if direction[index - 1] < 0 and current > previous_short:
+                direction[index] = 1
+            elif direction[index - 1] > 0 and current < previous_long:
+                direction[index] = -1
+            else:
+                direction[index] = direction[index - 1]
+        active_stop = long_stop[index] if direction[index] > 0 else short_stop[index]
+        ott[index] = active_stop * (1 + ratio / 2) if current > active_stop else active_stop * (1 - ratio / 2)
+    return pd.Series(ott, index=support.index)
 
 
 def add_focus_indicators(frame: pd.DataFrame, spec: TimeframeSpec) -> pd.DataFrame:
@@ -126,11 +239,109 @@ def add_focus_indicators(frame: pd.DataFrame, spec: TimeframeSpec) -> pd.DataFra
     data["macd_signal"] = ema(data["macd"], 9)
     data["macd_hist"] = data["macd"] - data["macd_signal"]
     data["atr_14"] = atr(data, 14)
+    data["linreg_open"] = _rolling_linear_regression(data["open"])
+    data["linreg_close"] = _rolling_linear_regression(data["close"])
+    data["linreg_slope"] = data["linreg_close"].diff(3) / 3
+    data["ut_stop"] = _atr_trailing_stop(data["close"], data["atr_14"])
+    data["ott_support"] = ema(data["close"], 7)
+    data["ott"] = _ott_line(data["ott_support"])
     data["previous_high_20"] = data["high"].shift(1).rolling(20, min_periods=10).max()
     data["previous_low_20"] = data["low"].shift(1).rolling(20, min_periods=10).min()
+    data["swing_high_12"] = data["high"].shift(1).rolling(12, min_periods=6).max()
+    data["swing_low_12"] = data["low"].shift(1).rolling(12, min_periods=6).min()
+    sweep_tolerance = data["atr_14"] * 0.05
+    data["bullish_liquidity_sweep"] = (
+        (data["low"] < data["swing_low_12"] - sweep_tolerance)
+        & (data["close"] > data["swing_low_12"])
+    )
+    data["bearish_liquidity_sweep"] = (
+        (data["high"] > data["swing_high_12"] + sweep_tolerance)
+        & (data["close"] < data["swing_high_12"])
+    )
+    candle_body = data["close"] - data["open"]
+    data["bullish_displacement"] = (
+        (candle_body > data["atr_14"] * 0.90)
+        & (data["close"] > data["swing_high_12"])
+    )
+    data["bearish_displacement"] = (
+        (-candle_body > data["atr_14"] * 0.90)
+        & (data["close"] < data["swing_low_12"])
+    )
     average_volume = data["volume"].shift(1).rolling(20, min_periods=5).mean()
     data["relative_volume"] = data["volume"] / average_volume.replace(0.0, np.nan)
     return data
+
+
+def _smart_money_context(frame: pd.DataFrame) -> SmartMoneyContext:
+    recent_start = max(len(frame) - 10, 0)
+    bullish_reversal = False
+    bearish_reversal = False
+    for sweep_index in np.flatnonzero(frame["bullish_liquidity_sweep"].fillna(False).to_numpy()):
+        if sweep_index < recent_start:
+            continue
+        confirmation = frame.iloc[sweep_index + 1 :]
+        prior_high = float(frame["high"].iloc[max(0, sweep_index - 6) : sweep_index].max())
+        if not confirmation.empty and (
+            confirmation["bullish_displacement"].any()
+            or float(confirmation["close"].max()) > prior_high
+        ):
+            bullish_reversal = True
+    for sweep_index in np.flatnonzero(frame["bearish_liquidity_sweep"].fillna(False).to_numpy()):
+        if sweep_index < recent_start:
+            continue
+        confirmation = frame.iloc[sweep_index + 1 :]
+        prior_low = float(frame["low"].iloc[max(0, sweep_index - 6) : sweep_index].min())
+        if not confirmation.empty and (
+            confirmation["bearish_displacement"].any()
+            or float(confirmation["close"].min()) < prior_low
+        ):
+            bearish_reversal = True
+
+    demand_low: float | None = None
+    demand_high: float | None = None
+    displacement_indices = np.flatnonzero(frame["bullish_displacement"].fillna(False).to_numpy())
+    for displacement_index in reversed(displacement_indices[-6:]):
+        search_start = max(displacement_index - 4, 0)
+        origin_index = displacement_index - 1
+        for candidate in range(displacement_index - 1, search_start - 1, -1):
+            candle = frame.iloc[candidate]
+            if float(candle["close"]) < float(candle["open"]):
+                origin_index = candidate
+                break
+        origin = frame.iloc[origin_index]
+        candidate_low = float(origin["low"])
+        candidate_high = max(float(origin["open"]), float(origin["close"]))
+        following_closes = frame["close"].iloc[origin_index + 1 :]
+        if not following_closes.empty and float(following_closes.min()) >= candidate_low:
+            demand_low, demand_high = candidate_low, candidate_high
+            break
+
+    latest = frame.iloc[-1]
+    demand_retest = bool(
+        demand_low is not None
+        and demand_high is not None
+        and float(latest["low"]) <= demand_high * 1.002
+        and float(latest["close"]) >= demand_high
+        and float(latest["close"]) > float(latest["open"])
+    )
+    if bullish_reversal:
+        event = "Sell-Side-Liquidität geholt · bullischer Strukturwechsel"
+    elif bearish_reversal:
+        event = "Buy-Side-Liquidität geholt · bärischer Strukturwechsel"
+    elif demand_retest:
+        event = "Bestätigter Retest der Nachfragezone"
+    else:
+        event = "Kein bestätigter Sweep-Strukturwechsel"
+    return SmartMoneyContext(
+        bullish_reversal=bullish_reversal,
+        bearish_reversal=bearish_reversal,
+        demand_retest=demand_retest,
+        demand_low=demand_low,
+        demand_high=demand_high,
+        liquidity_low=float(latest["swing_low_12"]) if np.isfinite(latest["swing_low_12"]) else None,
+        liquidity_high=float(latest["swing_high_12"]) if np.isfinite(latest["swing_high_12"]) else None,
+        event=event,
+    )
 
 
 def _momentum_factor(current_rsi: float, macd_hist: float, previous_hist: float) -> float:
@@ -149,7 +360,9 @@ def _momentum_factor(current_rsi: float, macd_hist: float, previous_hist: float)
 def analyze_timeframe(frame: pd.DataFrame, spec: TimeframeSpec) -> tuple[TimeframeAnalysis, pd.DataFrame]:
     if len(frame) < max(spec.slow_ema + 10, 35):
         raise ValueError(f"{spec.label}: zu wenige abgeschlossene Kerzen ({len(frame)}).")
-    data = add_focus_indicators(frame, spec)
+    # Fuer das aktuelle Signal reichen 800 vergangene Kerzen selbst fuer EMA 200
+    # mit grossem Warm-up. Die ungekappte Historie bleibt separat fuer den Chart erhalten.
+    data = add_focus_indicators(frame.tail(800), spec)
     latest = data.iloc[-1]
     previous = data.iloc[-2]
     close = float(latest["close"])
@@ -317,6 +530,95 @@ def _mean_reversion_strategy(enriched: dict[str, pd.DataFrame], analyses: dict[s
     return sum(scores) / len(scores)
 
 
+def _market_structure_strategy(enriched: dict[str, pd.DataFrame]) -> float:
+    """Objektive BOS-/Pullback-Naeherung aus den Marktstruktur-Videos."""
+
+    scores: list[float] = []
+    for key in ("5m", "15m"):
+        frame = enriched[key]
+        smart_money = _smart_money_context(frame)
+        latest = frame.iloc[-1]
+        previous = frame.iloc[-2]
+        close = float(latest["close"])
+        swing_high = float(latest["swing_high_12"])
+        swing_low = float(latest["swing_low_12"])
+        fast = float(latest["ema_fast"])
+        slow = float(latest["ema_slow"])
+        if smart_money.bullish_reversal:
+            score = 94.0
+        elif smart_money.bearish_reversal:
+            score = 6.0
+        elif smart_money.demand_retest:
+            score = 82.0
+        elif close > swing_high:
+            score = 86.0
+        elif close < swing_low:
+            score = 14.0
+        elif close > fast > slow and float(latest["low"]) <= fast * 1.006 and close > float(previous["close"]):
+            score = 74.0
+        elif swing_high > swing_low:
+            score = 20 + 60 * ((close - swing_low) / (swing_high - swing_low))
+        else:
+            score = 50.0
+        scores.append(_bounded_score(score))
+    return sum(scores) / len(scores)
+
+
+def _ott_ut_strategy(enriched: dict[str, pd.DataFrame]) -> float:
+    """Kombiniert OTT, UT-ATR-Stop und Linear-Regression-Kerzen als Trendbestaetigung."""
+
+    timeframe_scores: list[float] = []
+    for key in ("5m", "15m"):
+        latest = enriched[key].iloc[-1]
+        close = float(latest["close"])
+        checks = (
+            close > float(latest["ut_stop"]),
+            float(latest["ott_support"]) > float(latest["ott"]),
+            float(latest["linreg_close"]) > float(latest["linreg_open"]),
+            float(latest["linreg_slope"]) > 0,
+        )
+        timeframe_scores.append(sum(checks) / len(checks) * 100)
+    return timeframe_scores[0] * 0.65 + timeframe_scores[1] * 0.35
+
+
+def _trend_horizons(
+    analyses: dict[str, TimeframeAnalysis],
+    enriched: dict[str, pd.DataFrame],
+    price: float,
+    ensemble_score: float,
+) -> tuple[TrendForecast, ...]:
+    """Leitet 5-/15-/30-Minuten-Trends aus abgeschlossenen Zeitebenen und ATR ab."""
+
+    weight_sets = {
+        5: {"1m": 0.50, "5m": 0.35, "15m": 0.05},
+        15: {"1m": 0.20, "5m": 0.45, "15m": 0.25},
+        30: {"1m": 0.10, "5m": 0.30, "15m": 0.40, "1h": 0.10},
+    }
+    one_atr = _latest_finite(enriched["1m"], "atr_14", price * 0.003)
+    five_atr = _latest_finite(enriched["5m"], "atr_14", price * 0.006)
+    forecasts: list[TrendForecast] = []
+    for minutes, weights in weight_sets.items():
+        timeframe_weight = sum(weights.values())
+        horizon_score = sum(analyses[key].score * weight for key, weight in weights.items())
+        horizon_score += ensemble_score * (1 - timeframe_weight)
+        direction = "STEIGEND" if horizon_score >= 58 else "FALLEND" if horizon_score <= 42 else "SEITWÄRTS"
+        volatility = max(one_atr * np.sqrt(minutes), five_atr * np.sqrt(minutes / 5), price * 0.0015)
+        directional_shift = ((horizon_score - 50) / 50) * volatility * 0.55
+        expected = max(price + directional_shift, 0.001)
+        confidence = min(88.0, 45.0 + abs(horizon_score - 50) * 1.45)
+        forecasts.append(
+            TrendForecast(
+                minutes=minutes,
+                direction=direction,
+                expected_price=round(expected, 3),
+                expected_low=round(max(expected - volatility, 0.001), 3),
+                expected_high=round(expected + volatility, 3),
+                confidence=round(confidence, 1),
+            )
+        )
+    return tuple(forecasts)
+
+
 def build_strategy_ensemble(
     analyses: dict[str, TimeframeAnalysis],
     enriched: dict[str, pd.DataFrame],
@@ -338,6 +640,8 @@ def build_strategy_ensemble(
         analyses[key].score * weight
         for key, weight in {"1h": 0.50, "1d": 0.30, "1wk": 0.15, "1mo": 0.05}.items()
     )
+    structure_score = _market_structure_strategy(enriched)
+    ott_ut_score = _ott_ut_strategy(enriched)
 
     five_minute = enriched["5m"]
     latest_five = five_minute.iloc[-1]
@@ -352,13 +656,37 @@ def build_strategy_ensemble(
     recent_range = (float(recent["high"].max()) - float(recent["low"].min())) / price
     if aligned_trend and ema_separation >= 0.10:
         regime = "Trend"
-        weights = {"Trend": 0.34, "Momentum": 0.28, "Ausbruch": 0.25, "Rücklauf": 0.03, "Kontext": 0.10}
+        weights = {
+            "Trend": 0.22,
+            "Momentum": 0.18,
+            "Ausbruch": 0.12,
+            "Rücklauf": 0.02,
+            "Kontext": 0.08,
+            "Marktstruktur": 0.18,
+            "OTT/UT": 0.20,
+        }
     elif recent_range >= 0.04:
         regime = "hohe Volatilität"
-        weights = {"Trend": 0.25, "Momentum": 0.20, "Ausbruch": 0.20, "Rücklauf": 0.20, "Kontext": 0.15}
+        weights = {
+            "Trend": 0.18,
+            "Momentum": 0.14,
+            "Ausbruch": 0.14,
+            "Rücklauf": 0.12,
+            "Kontext": 0.12,
+            "Marktstruktur": 0.14,
+            "OTT/UT": 0.16,
+        }
     else:
         regime = "Seitwärts"
-        weights = {"Trend": 0.15, "Momentum": 0.15, "Ausbruch": 0.15, "Rücklauf": 0.45, "Kontext": 0.10}
+        weights = {
+            "Trend": 0.10,
+            "Momentum": 0.10,
+            "Ausbruch": 0.08,
+            "Rücklauf": 0.30,
+            "Kontext": 0.12,
+            "Marktstruktur": 0.14,
+            "OTT/UT": 0.16,
+        }
 
     strategy_scores = {
         "Trend": trend_score,
@@ -366,6 +694,8 @@ def build_strategy_ensemble(
         "Ausbruch": breakout_score,
         "Rücklauf": reversion_score,
         "Kontext": context_score,
+        "Marktstruktur": structure_score,
+        "OTT/UT": ott_ut_score,
     }
     score = sum(strategy_scores[name] * weight for name, weight in weights.items())
     if order_imbalance is not None and np.isfinite(order_imbalance):
@@ -384,6 +714,7 @@ def build_strategy_ensemble(
         f"{name} {value:.0f} {'↑' if value >= 58 else '↓' if value <= 42 else '→'}"
         for name, value in strategy_scores.items()
     )
+    horizons = _trend_horizons(analyses, enriched, price, score)
     return StrategyEnsemble(
         score=score,
         direction=direction,
@@ -393,6 +724,7 @@ def build_strategy_ensemble(
         votes=votes,
         positive_votes=sum(value >= 58 for value in strategy_scores.values()),
         negative_votes=sum(value <= 42 for value in strategy_scores.values()),
+        horizons=horizons,
     )
 
 
@@ -446,8 +778,6 @@ def build_intraday_signal(
         one_minute_atr = price * 0.006
     entry_low = price - (0.10 * one_minute_atr)
     entry_high = price + (0.15 * one_minute_atr)
-    stop_loss = price - one_minute_atr
-    target = price + (1.5 * one_minute_atr)
 
     forecast = build_strategy_ensemble(
         analyses,
@@ -457,6 +787,10 @@ def build_intraday_signal(
         order_imbalance=order_imbalance,
     )
     score = forecast.score
+    five_minute_atr = _latest_finite(enriched["5m"], "atr_14", price * 0.006)
+    risk_distance = max(one_minute_atr, five_minute_atr * 0.75)
+    stop_loss = price - risk_distance
+    target = min(price + 2.25 * risk_distance, forecast.expected_high)
 
     if enforce_market_hours and not market_open:
         return IntradaySignal(
@@ -481,6 +815,7 @@ def build_intraday_signal(
             forecast.regime,
             forecast.votes,
             spread_percent,
+            forecast.horizons,
         )
     if age_minutes > maximum_data_age_minutes:
         return IntradaySignal(
@@ -505,6 +840,7 @@ def build_intraday_signal(
             forecast.regime,
             forecast.votes,
             spread_percent,
+            forecast.horizons,
         )
 
     observed_short_volume = max(
@@ -517,14 +853,38 @@ def build_intraday_signal(
     short_volume = observed_short_volume or not require_volume_confirmation
     wide_spread = spread_percent is not None and spread_percent > 0.6
     liquidity_veto = wide_spread and enforce_liquidity_filter
+    latest_five = enriched["5m"].iloc[-1]
+    latest_fifteen = enriched["15m"].iloc[-1]
+    five_atr = _latest_finite(enriched["5m"], "atr_14", price * 0.006)
+    trend_confirmation_votes = (
+        float(latest_five["close"]) > float(latest_five["ut_stop"]),
+        float(latest_five["ott_support"]) > float(latest_five["ott"]),
+        float(latest_five["linreg_close"]) > float(latest_five["linreg_open"]),
+        float(latest_five["linreg_slope"]) > 0,
+        float(latest_fifteen["close"]) > float(latest_fifteen["ut_stop"]),
+    )
+    confirmed_trend = sum(trend_confirmation_votes) >= 4
+    not_chasing = (
+        float(latest_five["close"]) - float(latest_five["ema_fast"])
+        <= max(five_atr * 1.2, price * 0.002)
+    )
+    smart_money = _smart_money_context(enriched["5m"])
+    setup_confirmation = (
+        analyses["1m"].setup in {"Ausbruch", "Trend-Rücksetzer"}
+        or smart_money.bullish_reversal
+        or smart_money.demand_retest
+    )
     short_trigger = (
         analyses["1m"].score >= 62
         and analyses["5m"].score >= 62
         and analyses["15m"].score >= 52
         and analyses["1m"].rsi <= 73
-        and analyses["1m"].setup in {"Ausbruch", "Trend-Rücksetzer"}
+        and setup_confirmation
         and short_volume
-        and forecast.positive_votes >= 3
+        and forecast.positive_votes >= 5
+        and confirmed_trend
+        and not_chasing
+        and not smart_money.bearish_reversal
         and not liquidity_veto
     )
     context_veto = analyses["1h"].score < 38 or analyses["1d"].score < 35
@@ -539,6 +899,13 @@ def build_intraday_signal(
             else "L&S-Bid-Quelle ohne Volumen · Preisbestätigung aktiv · "
         )
         + (f"Spread {spread_percent:.2f} %" if spread_percent is not None else "Spread nicht verfügbar"),
+        (
+            "Marktstruktur + OTT/UT + LinReg bestätigt"
+            if confirmed_trend
+            else "OTT/UT/LinReg noch nicht gemeinsam bestätigt"
+        )
+        + (" · Einstieg nicht überdehnt" if not_chasing else " · Kurs bereits zu weit vom EMA entfernt"),
+        "Liquidität/Orderblock: " + smart_money.event,
     )
 
     action = "WAIT"
@@ -589,6 +956,12 @@ def build_intraday_signal(
         market_regime=forecast.regime,
         strategy_votes=forecast.votes,
         spread_percent=spread_percent,
+        trend_forecasts=forecast.horizons,
+        demand_low=smart_money.demand_low,
+        demand_high=smart_money.demand_high,
+        liquidity_low=smart_money.liquidity_low,
+        liquidity_high=smart_money.liquidity_high,
+        structure_event=smart_money.event,
     )
 
 

@@ -9,12 +9,13 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import text
 
 from src.data import ProviderError, YFinanceMarketDataProvider
 from src.database import DataStore
 from src.database.models import FocusBotStatus
 
-from .analysis import DWAVE_INSTRUMENT, FocusPosition, analyze_timeframes, build_market_signal
+from .analysis import DWAVE_INSTRUMENT, FocusPosition, IntradaySignal, analyze_timeframes, build_market_signal
 from .charts import day_signal_chart
 from .data import TimeframeBundle, load_dwave_timeframes
 from .display import (
@@ -27,7 +28,7 @@ from .display import (
     select_display_candles,
 )
 from .lang_schwarz import LangSchwarzQuoteProvider
-from .paper import PaperAccount, current_paper_account, paper_order_events
+from .paper import PAPER_STRATEGY_VERSION, PaperAccount, current_paper_account, paper_order_events
 from .quote import (
     LiveQuote,
     TradegateQuoteProvider,
@@ -309,21 +310,15 @@ def _render_paper_account(
     quote: LiveQuote,
     bot_status: FocusBotStatus | None,
 ) -> None:
-    display_state = bot_status.account_state if bot_status is not None else account.state
-    state_color = (
-        "#58c981"
-        if display_state == "INVESTIERT"
-        else "#f59e0b"
-        if "SPREAD" in display_state
-        else "#94a3b8"
-    )
     service_color = "#e06469"
     service_text = "HINTERGRUND NICHT GESTARTET"
+    bot_status_is_fresh = False
     if bot_status is not None:
         heartbeat = bot_status.last_heartbeat
         heartbeat = heartbeat.replace(tzinfo=UTC) if heartbeat.tzinfo is None else heartbeat.astimezone(UTC)
         heartbeat_age = (datetime.now(UTC) - heartbeat).total_seconds()
         heartbeat_time = heartbeat.astimezone(ZoneInfo("Europe/Berlin"))
+        bot_status_is_fresh = heartbeat_age <= 180
         if heartbeat_age <= 180 and bot_status.run_state == "ERROR":
             service_text = f"HINTERGRUND FEHLER · {heartbeat_time:%H:%M:%S}"
         elif heartbeat_age <= 180 and bot_status.run_state == "WARMUP":
@@ -335,6 +330,14 @@ def _render_paper_account(
             service_text = f"HINTERGRUND AKTIV · {mode} · {heartbeat_time:%H:%M:%S}"
         else:
             service_text = f"HINTERGRUND INAKTIV · letzter Kontakt {heartbeat_time:%H:%M:%S}"
+    display_state = bot_status.account_state if bot_status is not None and bot_status_is_fresh else account.state
+    state_color = (
+        "#58c981"
+        if display_state == "INVESTIERT"
+        else "#f59e0b"
+        if "SPREAD" in display_state
+        else "#94a3b8"
+    )
     result_color = "#58c981" if account.result_eur >= 0 else "#e06469"
     spread_eur = quote.ask - quote.bid
     position_text = (
@@ -364,18 +367,100 @@ def _render_paper_account(
 def _validation_text(metrics: dict[str, float | int | None]) -> str:
     recorded = int(metrics["recorded"] or 0)
     completed = int(metrics["completed"] or 0)
+    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der neuen Strategie v2"
     if completed < 20:
         forecast_label = "Prognose" if recorded == 1 else "Prognosen"
         return (
-            f"Vorwärtsprüfung · {recorded} {forecast_label} gespeichert · "
+            f"{label} · {recorded} {forecast_label} gespeichert · "
             f"{completed} nach 15 Minuten ausgewertet · "
             f"aussagekräftiger ab 20 abgeschlossenen Fällen"
         )
     return (
-        f"Vorwärtsprüfung · {completed} echte 15-Minuten-Fälle · "
+        f"{label} · {completed} echte 15-Minuten-Fälle · "
         f"Richtungstreffer {float(metrics['direction_accuracy']):.1f} % · "
         f"Kurs in Zone {float(metrics['zone_coverage']):.1f} % · "
         "nur später eingetroffene Kurse"
+    )
+
+
+def _versioned_forecast_metrics(store: DataStore) -> dict[str, float | int | None]:
+    """Bleibt auch waehrend eines Streamlit-Hot-Reloads auf der neuen Modellversion."""
+
+    try:
+        return store.focus_forecast_metrics(
+            symbol=DWAVE_INSTRUMENT.exchange_symbol,
+            horizon_minutes=15,
+            model_version=PAPER_STRATEGY_VERSION,
+        )
+    except TypeError:
+        with store.sessions() as session:
+            parameters = {
+                "symbol": DWAVE_INSTRUMENT.exchange_symbol,
+                "model_version": PAPER_STRATEGY_VERSION,
+                "horizon": 15,
+                "limit": 200,
+            }
+            recorded = int(
+                session.execute(
+                    text(
+                        "SELECT COUNT(*) FROM focus_forecasts "
+                        "WHERE symbol = :symbol AND model_version = :model_version"
+                    ),
+                    parameters,
+                ).scalar_one()
+            )
+            outcomes = session.execute(
+                text(
+                    "SELECT o.direction_hit, o.zone_hit, o.return_percent "
+                    "FROM focus_forecast_outcomes o "
+                    "JOIN focus_forecasts f ON f.id = o.forecast_id "
+                    "WHERE f.symbol = :symbol AND f.model_version = :model_version "
+                    "AND o.horizon_minutes = :horizon "
+                    "ORDER BY o.observed_at DESC LIMIT :limit"
+                ),
+                parameters,
+            ).all()
+        completed = len(outcomes)
+        return {
+            "recorded": recorded,
+            "completed": completed,
+            "direction_accuracy": (
+                sum(bool(row.direction_hit) for row in outcomes) / completed * 100 if completed else None
+            ),
+            "zone_coverage": sum(bool(row.zone_hit) for row in outcomes) / completed * 100 if completed else None,
+            "average_return": (
+                sum(float(row.return_percent) for row in outcomes) / completed if completed else None
+            ),
+        }
+
+
+def _render_trend_forecast(signal: IntradaySignal) -> None:
+    """Zeigt die kurzfristige Schaetzung kompakt und klar getrennt vom Handelssignal."""
+
+    if not signal.trend_forecasts:
+        return
+    direction_style = {
+        "STEIGEND": ("↗", "#58c981"),
+        "FALLEND": ("↘", "#e06469"),
+        "SEITWÄRTS": ("→", "#f59e0b"),
+    }
+    cells: list[str] = []
+    for forecast in signal.trend_forecasts:
+        arrow, color = direction_style.get(forecast.direction, ("→", "#94a3b8"))
+        cells.append(
+            '<span class="trend-forecast-cell">'
+            f'<b>{forecast.minutes} Min</b> '
+            f'<em style="color:{color}">{arrow} {forecast.direction.title()}</em> '
+            f'<strong>{forecast.expected_price:.3f} €</strong> '
+            f'<small>Zone {forecast.expected_low:.3f}–{forecast.expected_high:.3f} · '
+            f'Modellstärke {forecast.confidence:.0f} %</small>'
+            '</span>'
+        )
+    st.markdown(
+        '<div class="trend-forecast-bar"><label>VORAUSSICHTLICHER TREND</label>'
+        + "".join(cells)
+        + '<i>Schätzung, keine Garantie</i></div>',
+        unsafe_allow_html=True,
     )
 
 
@@ -422,11 +507,9 @@ def _automatic_day_chart(store: DataStore) -> None:
     paper_account = current_paper_account(store, quote.bid)
     bot_status = store.get_focus_bot_status()
     events = paper_order_events(store, paper_account.portfolio_id, candles.index[-1])
-    validation = store.focus_forecast_metrics(
-        symbol=DWAVE_INSTRUMENT.exchange_symbol,
-        horizon_minutes=15,
-    )
+    validation = _versioned_forecast_metrics(store)
     _render_paper_account(paper_account, quote, bot_status)
+    _render_trend_forecast(signal)
 
     current_period = st.session_state.get("dwave_chart_period", "Intraday")
     if current_period not in PERIOD_OPTIONS:
@@ -471,9 +554,9 @@ def _automatic_day_chart(store: DataStore) -> None:
             )
             overlays = st.pills(
                 "Einblendungen",
-                options=("EMA", "Prognose", "Signale", "Position"),
+                options=("EMA", "Prognose", "Zonen", "Signale", "Position"),
                 selection_mode="multi",
-                default=("Prognose", "Signale", "Position"),
+                default=("Prognose", "Zonen", "Signale", "Position"),
                 key="dwave_chart_overlays",
                 width="stretch",
             )

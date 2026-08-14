@@ -10,6 +10,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from .models import Base
 
 SQLITE_COMPATIBILITY_COLUMNS = {
+    "focus_forecasts": {
+        "model_version": "VARCHAR(30) NOT NULL DEFAULT 'focus-market-v1'",
+    },
     "virtual_positions": {
         "entry_provider": "VARCHAR(80) NOT NULL DEFAULT 'unbekannt'",
         "last_provider": "VARCHAR(80) NOT NULL DEFAULT 'unbekannt'",

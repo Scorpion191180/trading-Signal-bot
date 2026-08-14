@@ -143,6 +143,65 @@ def day_signal_chart(
             fillcolor="rgba(56,189,248,.055)",
             line={"color": "rgba(56,189,248,.38)", "width": 1, "dash": "dot"},
         )
+    if "Prognose" in active_overlays and signal.trend_forecasts and period_label == "Intraday":
+        forecast_x = [current_x] + [
+            current_x + pd.Timedelta(minutes=item.minutes) for item in signal.trend_forecasts
+        ]
+        forecast_y = [quote.bid] + [item.expected_price for item in signal.trend_forecasts]
+        upper_error = [0.0] + [
+            item.expected_high - item.expected_price for item in signal.trend_forecasts
+        ]
+        lower_error = [0.0] + [
+            item.expected_price - item.expected_low for item in signal.trend_forecasts
+        ]
+        figure.add_trace(
+            go.Scatter(
+                x=forecast_x,
+                y=forecast_y,
+                mode="lines+markers+text",
+                name="Trendprognose",
+                text=[""] + [f"{item.minutes}m" for item in signal.trend_forecasts],
+                textposition="top center",
+                line={"color": "#38bdf8", "width": 1.5, "dash": "dot"},
+                marker={"size": 6, "color": "#38bdf8"},
+                error_y={
+                    "type": "data",
+                    "symmetric": False,
+                    "array": upper_error,
+                    "arrayminus": lower_error,
+                    "color": "rgba(56,189,248,.38)",
+                    "thickness": 1,
+                    "width": 3,
+                },
+                hovertemplate="Trend-Schätzung %{y:.3f} €<extra></extra>",
+            )
+        )
+    if "Zonen" in active_overlays:
+        if signal.demand_low is not None and signal.demand_high is not None:
+            figure.add_hrect(
+                y0=signal.demand_low,
+                y1=signal.demand_high,
+                fillcolor="rgba(34,197,94,.10)",
+                line={"color": "rgba(34,197,94,.55)", "width": 1},
+                annotation_text="Nachfrage / Orderblock",
+                annotation_position="bottom right",
+            )
+        if signal.liquidity_high is not None:
+            figure.add_hline(
+                y=signal.liquidity_high,
+                line_color="rgba(244,114,182,.50)",
+                line_dash="dot",
+                annotation_text="Liquidität oben",
+                annotation_position="top left",
+            )
+        if signal.liquidity_low is not None:
+            figure.add_hline(
+                y=signal.liquidity_low,
+                line_color="rgba(45,212,191,.45)",
+                line_dash="dot",
+                annotation_text="Liquidität unten",
+                annotation_position="top left",
+            )
 
     event_styles = {
         "BUY": ("Kaufen", "#22c55e", "triangle-up"),
