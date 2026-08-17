@@ -6,6 +6,7 @@ import json
 import ssl
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -21,6 +22,7 @@ from .quote import LiveQuote
 STOCK3_INSTRUMENT_ID = 61824087
 LANG_SCHWARZ_EXCHANGE_ID = 22
 SUPPORTED_RESOLUTIONS = {60, 300, 1800, 3600, 86400}
+DEFAULT_HISTORY_CACHE = Path(__file__).resolve().parents[2] / "data" / "stock3_cache"
 
 
 def _number(value: object, *, field: str) -> float:
@@ -176,10 +178,63 @@ class Stock3LangSchwarzProvider:
         opener: Callable[..., Any] = urlopen,
         clock: Callable[[], datetime] | None = None,
         ssl_context: ssl.SSLContext | None = None,
+        cache_directory: Path | None = None,
     ) -> None:
         self._opener = opener
         self._clock = clock or (lambda: datetime.now(UTC))
         self._ssl_context = ssl_context or ssl.create_default_context(cafile=certifi.where())
+        self._cache_directory = (
+            cache_directory
+            if cache_directory is not None
+            else DEFAULT_HISTORY_CACHE
+            if opener is urlopen
+            else None
+        )
+
+    def _cache_path(self, resolution_seconds: int, quote_type: str) -> Path | None:
+        if self._cache_directory is None:
+            return None
+        return self._cache_directory / f"dwave_ls_{quote_type}_{resolution_seconds}.csv"
+
+    def _write_history_cache(
+        self,
+        frame: pd.DataFrame,
+        resolution_seconds: int,
+        quote_type: str,
+    ) -> None:
+        path = self._cache_path(resolution_seconds, quote_type)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".csv.tmp")
+            frame.to_csv(temporary, index_label="timestamp")
+            temporary.replace(path)
+        except OSError:
+            return
+
+    def _read_history_cache(self, resolution_seconds: int, quote_type: str) -> pd.DataFrame | None:
+        path = self._cache_path(resolution_seconds, quote_type)
+        if path is None or not path.is_file():
+            return None
+        try:
+            frame = pd.read_csv(path, index_col="timestamp", parse_dates=["timestamp"])
+            frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index, utc=True), name="timestamp")
+            required = ["open", "high", "low", "close", "volume"]
+            frame = frame[required].astype(float).sort_index()
+        except (OSError, ValueError, KeyError, pd.errors.ParserError):
+            return None
+        if frame.empty or (
+            (frame["high"] < frame[["open", "close"]].max(axis=1)).any()
+            or (frame["low"] > frame[["open", "close"]].min(axis=1)).any()
+            or (frame[["open", "high", "low", "close"]] <= 0).any().any()
+        ):
+            return None
+        label = "Bid" if quote_type == "bid" else "Ask"
+        frame.attrs["provider"] = f"stock3 · L&S {label} · lokaler Cache"
+        frame.attrs["quote_type"] = quote_type
+        frame.attrs["cached"] = True
+        return frame
 
     def _read_json(self, url: str, *, label: str) -> dict[str, Any]:
         request = Request(
@@ -226,8 +281,16 @@ class Stock3LangSchwarzProvider:
                 "locale": "de",
             }
         )
-        payload = self._read_json(
-            f"{self.chart_endpoint}?{query}",
-            label=f"Die öffentliche stock3-L&S-{quote_type.upper()}-Historie",
-        )
-        return decode_stock3_candles(payload, resolution_seconds, quote_type=quote_type)
+        try:
+            payload = self._read_json(
+                f"{self.chart_endpoint}?{query}",
+                label=f"Die öffentliche stock3-L&S-{quote_type.upper()}-Historie",
+            )
+        except ProviderError:
+            cached = self._read_history_cache(resolution_seconds, quote_type)
+            if cached is not None:
+                return cached
+            raise
+        frame = decode_stock3_candles(payload, resolution_seconds, quote_type=quote_type)
+        self._write_history_cache(frame, resolution_seconds, quote_type)
+        return frame

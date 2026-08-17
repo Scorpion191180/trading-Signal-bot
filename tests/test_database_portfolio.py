@@ -172,6 +172,16 @@ def test_focus_forecast_metrics_keep_strategy_versions_separate(store):
         "market_regime": "Trend",
         "strategy_votes": ("Trend 70 ↑",),
         "spread_percent": 0.2,
+        "horizon_forecasts": (
+            {
+                "minutes": 15,
+                "direction": "STEIGEND",
+                "expected_price": 10.1,
+                "expected_low": 9.9,
+                "expected_high": 10.3,
+                "confidence": 60.0,
+            },
+        ),
     }
 
     old, old_inserted = store.record_focus_forecast(**arguments, model_version="focus-market-v1")
@@ -182,6 +192,51 @@ def test_focus_forecast_metrics_keep_strategy_versions_separate(store):
     assert old.id != new.id
     assert store.focus_forecast_metrics(symbol="RQ0", model_version="focus-market-v1")["recorded"] == 1
     assert store.focus_forecast_metrics(symbol="RQ0", model_version="focus-market-v2")["recorded"] == 1
+    assert len(store.focus_forecast_chart_points(model_version="focus-market-v2", horizon_minutes=15)) == 1
+    assert len(
+        store.focus_forecast_chart_points(
+            model_version=("focus-market-v1", "focus-market-v2"),
+            horizon_minutes=15,
+        )
+    ) == 2
+    assert store.focus_forecast_chart_points(model_version="focus-market-v3", horizon_minutes=15) == []
+
+
+def test_focus_forecast_direction_must_beat_recorded_spread(store):
+    forecast_at = datetime(2026, 8, 13, 8, 1, tzinfo=UTC)
+    store.record_focus_forecast(
+        symbol="RQ0",
+        provider="Lang & Schwarz",
+        forecast_at=forecast_at,
+        entry_price=10.0,
+        bid=9.98,
+        ask=10.02,
+        direction="EHER STEIGEND",
+        model_score=64.0,
+        forecast_low=9.8,
+        forecast_high=10.2,
+        market_regime="Trend",
+        strategy_votes=("Trend 70 ↑",),
+        spread_percent=0.4,
+        horizon_forecasts=(
+            {
+                "minutes": 5,
+                "direction": "STEIGEND",
+                "expected_price": 10.05,
+                "expected_low": 9.9,
+                "expected_high": 10.2,
+                "confidence": 60.0,
+            },
+        ),
+    )
+
+    assert store.evaluate_focus_forecasts(
+        "RQ0",
+        [(forecast_at + timedelta(minutes=5), 10.02)],
+        provider="Lang & Schwarz",
+    ) == 1
+    point = store.focus_forecast_chart_points(horizon_minutes=5)[0]
+    assert point["direction_hit"] is False
 
 
 def test_virtual_buy_sell_and_journal(store):

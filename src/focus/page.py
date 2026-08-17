@@ -141,8 +141,8 @@ def _cached_stock3_quote() -> dict[str, object]:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _cached_stock3_history(resolution_seconds: int) -> pd.DataFrame:
-    return Stock3LangSchwarzProvider().history(resolution_seconds)
+def _cached_stock3_history(resolution_seconds: int, quote_type: str = "bid") -> pd.DataFrame:
+    return Stock3LangSchwarzProvider().history(resolution_seconds, quote_type=quote_type)
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -152,7 +152,7 @@ def _cached_stock3_minute_history() -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_today_replay() -> dict[str, object]:
-    """Berechnet den v6-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
+    """Berechnet den v7-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
 
     provider = Stock3LangSchwarzProvider()
     result = replay_focus_day(
@@ -261,6 +261,10 @@ def _live_market_data() -> tuple[LiveQuote, pd.DataFrame, bool, str]:
     try:
         quote = LiveQuote(**_cached_stock3_quote())
         candles = _latest_trading_day(_cached_stock3_minute_history(), quote)
+        try:
+            _cached_stock3_history(60, "ask")
+        except ProviderError:
+            pass
         if len(candles) < 30:
             raise ProviderError("Die öffentliche L&S-Bid-Historie enthält zu wenige Tageskerzen.")
         return quote, _apply_live_quote(candles, quote), False, "stock3 · L&S Bid"
@@ -668,7 +672,7 @@ def _render_paper_account(
 def _validation_text(metrics: dict[str, float | int | None]) -> str:
     recorded = int(metrics["recorded"] or 0)
     completed = int(metrics["completed"] or 0)
-    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der neuen Strategie v5"
+    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der neuen Strategie v7"
     if completed < 20:
         forecast_label = "Prognose" if recorded == 1 else "Prognosen"
         return (
@@ -789,7 +793,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
     completed = int(summary["completed_trades"])
     costs = float(summary["transaction_costs"])
     confirmations = int(summary["confirmation_observations"])
-    note = "kein vollständiges v5-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
+    note = "kein kostenbereinigtes v7-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
     orders = summary.get("orders", ())
     order_labels: list[str] = []
     if isinstance(orders, (list, tuple)):
@@ -812,7 +816,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
         ):
             note += " · 17:55-Musterkerze als Live-Bestätigungsproxy"
     st.markdown(
-        '<div class="replay-summary-bar"><label>TAGES-REPLAY V6</label>'
+        '<div class="replay-summary-bar"><label>TAGES-REPLAY V7</label>'
         f'<b>{first_at:%H:%M}–{last_at:%H:%M}</b>'
         f'<strong style="color:{color}">{pnl:+.2f} € ({float(summary["pnl_percent"]):+.2f} %)</strong>'
         f'<span>Depot {float(summary["ending_equity"]):.2f} €</span>'
@@ -948,12 +952,38 @@ def _automatic_day_chart(store: DataStore) -> None:
         selected_minutes = 5
         display_candles = resample_intraday_candles(candles, 5)
 
-    historical_forecasts = store.focus_forecast_chart_points(
-        symbol=DWAVE_INSTRUMENT.exchange_symbol,
-        horizon_minutes=int(forecast_horizon),
-        start_at=pd.Timestamp(display_candles.index[0]).to_pydatetime(),
-        end_at=pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
-    )
+    forecast_arguments = {
+        "symbol": DWAVE_INSTRUMENT.exchange_symbol,
+        "horizon_minutes": int(forecast_horizon),
+        "start_at": pd.Timestamp(display_candles.index[0]).to_pydatetime(),
+        "end_at": pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
+    }
+    try:
+        combined_forecasts = [
+            *store.focus_forecast_chart_points(
+                **forecast_arguments,
+                model_version=f"{PAPER_STRATEGY_VERSION}-replay",
+            ),
+            *store.focus_forecast_chart_points(
+                **forecast_arguments,
+                model_version=PAPER_STRATEGY_VERSION,
+            ),
+        ]
+    except TypeError:
+        compatible_versions = {PAPER_STRATEGY_VERSION, f"{PAPER_STRATEGY_VERSION}-replay"}
+        combined_forecasts = [
+            item
+            for item in store.focus_forecast_chart_points(**forecast_arguments)
+            if item.get("model_version") in compatible_versions
+        ]
+    forecasts_by_target = {
+        pd.Timestamp(item["target_at"]): item
+        for item in combined_forecasts
+    }
+    historical_forecasts = [
+        forecasts_by_target[target]
+        for target in sorted(forecasts_by_target)
+    ]
 
     chart_key = f"dwave_professional_chart_{period_label}_{selected_minutes}_{chart_style}"
     zoom_key = f"{chart_key}_zoom"

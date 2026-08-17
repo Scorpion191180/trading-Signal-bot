@@ -516,13 +516,15 @@ def _microtrend_continuation(
     if not (bullish_staircase and breakout and preceding_pullback and trend_ok):
         return MicrotrendContinuation()
 
-    stop_loss = float(latest["low"]) - candidate_atr * 0.12
+    stop_reference = min(float(staircase["low"].min()), prior_local_high)
+    stop_loss = stop_reference - candidate_atr * 0.25
+    risk_distance = closes[-1] - stop_loss
     return MicrotrendContinuation(
         active=True,
         event_at=pd.Timestamp(frame.index[-1]).to_pydatetime(),
         breakout_level=prior_local_high,
         stop_loss=stop_loss,
-        target=closes[-1] + max(candidate_atr * 10.0, pullback_range * 3.5),
+        target=closes[-1] + max(risk_distance * 2.2, candidate_atr * 4.0, pullback_range * 1.5),
         event=MICROTREND_CONTINUATION_EVENT,
     )
 
@@ -786,13 +788,43 @@ def _ott_ut_strategy(enriched: dict[str, pd.DataFrame]) -> float:
     return timeframe_scores[0] * 0.65 + timeframe_scores[1] * 0.35
 
 
+def _price_impulse(frame: pd.DataFrame, bars: int) -> float:
+    """Misst jüngste Richtung und Persistenz relativ zur aktuellen Volatilität."""
+
+    if len(frame) <= bars:
+        return 0.0
+    close = frame["close"].astype(float)
+    latest_atr = _latest_finite(frame, "atr_14", float(close.iloc[-1]) * 0.002)
+    scale = max(latest_atr * np.sqrt(bars), float(close.iloc[-1]) * 0.0005)
+    move = float(close.iloc[-1] - close.iloc[-1 - bars]) / scale
+    persistence = float(np.sign(close.diff().tail(bars).fillna(0.0)).mean())
+    return float(np.clip(move * 0.72 + persistence * 0.28, -2.0, 2.0))
+
+
+def _horizon_price_action(enriched: dict[str, pd.DataFrame], minutes: int) -> float:
+    """Reagiert schneller auf Wendepunkte als die nachlaufenden EMA-/OTT-Komponenten."""
+
+    configurations = {
+        5: (("1m", 3, 0.50), ("1m", 8, 0.30), ("5m", 1, 0.20)),
+        15: (("1m", 8, 0.25), ("5m", 2, 0.50), ("15m", 1, 0.25)),
+        30: (("5m", 3, 0.35), ("5m", 6, 0.25), ("15m", 2, 0.30), ("1h", 1, 0.10)),
+        60: (("5m", 6, 0.20), ("15m", 3, 0.45), ("1h", 1, 0.35)),
+        120: (("15m", 4, 0.35), ("1h", 2, 0.50), ("1d", 1, 0.15)),
+    }
+    impulse = sum(
+        _price_impulse(enriched[key], bars) * weight
+        for key, bars, weight in configurations[minutes]
+    )
+    return _bounded_score(50 + impulse * 22)
+
+
 def _trend_horizons(
     analyses: dict[str, TimeframeAnalysis],
     enriched: dict[str, pd.DataFrame],
     price: float,
     ensemble_score: float,
 ) -> tuple[TrendForecast, ...]:
-    """Leitet 5- bis 120-Minuten-Trends aus abgeschlossenen Zeitebenen und ATR ab."""
+    """Leitet getrennte Horizonte aus Preisaktion, Zeitebenen und ATR ab."""
 
     weight_sets = {
         5: {"1m": 0.50, "5m": 0.35, "15m": 0.05},
@@ -804,12 +836,18 @@ def _trend_horizons(
     one_atr = _latest_finite(enriched["1m"], "atr_14", price * 0.003)
     five_atr = _latest_finite(enriched["5m"], "atr_14", price * 0.006)
     hour_atr = _latest_finite(enriched["1h"], "atr_14", price * 0.018)
+    price_action_weights = {5: 0.70, 15: 0.60, 30: 0.40, 60: 0.30, 120: 0.20}
     forecasts: list[TrendForecast] = []
     for minutes, weights in weight_sets.items():
         timeframe_weight = sum(weights.values())
-        horizon_score = sum(analyses[key].score * weight for key, weight in weights.items())
-        horizon_score += ensemble_score * (1 - timeframe_weight)
-        direction = "STEIGEND" if horizon_score >= 58 else "FALLEND" if horizon_score <= 42 else "SEITWÄRTS"
+        lagging_score = sum(analyses[key].score * weight for key, weight in weights.items())
+        lagging_score += ensemble_score * (1 - timeframe_weight)
+        price_action_score = _horizon_price_action(enriched, minutes)
+        price_action_weight = price_action_weights[minutes]
+        horizon_score = (
+            price_action_score * price_action_weight
+            + lagging_score * (1 - price_action_weight)
+        )
         volatility_inputs = [
             one_atr * np.sqrt(minutes),
             five_atr * np.sqrt(minutes / 5),
@@ -818,9 +856,21 @@ def _trend_horizons(
         if minutes >= 60:
             volatility_inputs.append(hour_atr * np.sqrt(minutes / 60))
         volatility = max(volatility_inputs)
-        directional_shift = ((horizon_score - 50) / 50) * volatility * 0.55
+        directional_shift = ((horizon_score - 50) / 50) * volatility * 0.75
         expected = max(price + directional_shift, 0.001)
-        confidence = min(88.0, 45.0 + abs(horizon_score - 50) * 1.45)
+        direction = (
+            "STEIGEND"
+            if horizon_score >= 58
+            else "FALLEND"
+            if horizon_score <= 42
+            else "SEITWÄRTS"
+        )
+        disagreement = abs(price_action_score - lagging_score)
+        confidence = np.clip(
+            45.0 + abs(horizon_score - 50) * 1.25 - disagreement * 0.30,
+            35.0,
+            82.0,
+        )
         forecasts.append(
             TrendForecast(
                 minutes=minutes,
@@ -922,7 +972,6 @@ def build_strategy_ensemble(
         context_adjustment = np.clip((external_context.score - 50) * 0.18, -7.0, 7.0)
         score += float(context_adjustment)
     score = round(_bounded_score(score), 1)
-    direction = "EHER STEIGEND" if score >= 58 else "EHER FALLEND" if score <= 42 else "SEITWÄRTS"
 
     one_minute_atr = _latest_finite(enriched["1m"], "atr_14", price * 0.006)
     expected_move = max(atr_five * 1.35, one_minute_atr * np.sqrt(15), price * 0.003)
@@ -933,7 +982,23 @@ def build_strategy_ensemble(
         f"{name} {value:.0f} {'↑' if value >= 58 else '↓' if value <= 42 else '→'}"
         for name, value in strategy_scores.items()
     )
-    horizons = _trend_horizons(analyses, enriched, price, score)
+    horizons = _trend_horizons(
+        analyses,
+        enriched,
+        price,
+        score,
+    )
+    short_direction_score = sum(
+        {"STEIGEND": 1.0, "FALLEND": -1.0, "SEITWÄRTS": 0.0}[forecast.direction] * weight
+        for forecast, weight in zip(horizons[:3], (0.50, 0.30, 0.20), strict=True)
+    )
+    direction = (
+        "EHER STEIGEND"
+        if short_direction_score >= 0.45
+        else "EHER FALLEND"
+        if short_direction_score <= -0.45
+        else "SEITWÄRTS"
+    )
     return StrategyEnsemble(
         score=score,
         direction=direction,
@@ -1110,6 +1175,9 @@ def build_intraday_signal(
         and analyses["15m"].score >= 50
         and analyses["1h"].score >= 45
         and analyses["1d"].score >= 40
+        and forecast.score >= 58
+        and forecast.horizons[0].direction == "STEIGEND"
+        and forecast.horizons[1].direction != "FALLEND"
     )
     microtrend_trigger = (
         microtrend.active
@@ -1140,6 +1208,8 @@ def build_intraday_signal(
         and setup_confirmation
         and short_volume
         and forecast.positive_votes >= 5
+        and forecast.horizons[0].direction == "STEIGEND"
+        and forecast.horizons[1].direction != "FALLEND"
         and confirmed_trend
         and not_chasing
         and not smart_money.bearish_reversal

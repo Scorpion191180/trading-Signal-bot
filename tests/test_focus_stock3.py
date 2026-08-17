@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -122,6 +123,25 @@ def test_stock3_provider_requests_bid_history_from_lang_schwarz():
 
     assert len(provider.history(60, quote_type="ask")) == 3
     assert "qs=ask" in requested_urls[2]
+
+
+def test_stock3_history_falls_back_to_validated_local_cache(tmp_path: Path):
+    online = Stock3LangSchwarzProvider(
+        opener=lambda *_args, **_kwargs: _Response(_history_payload()),
+        cache_directory=tmp_path,
+    )
+    expected = online.history(60, quote_type="ask")
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("offline")
+
+    offline = Stock3LangSchwarzProvider(opener=unavailable, cache_directory=tmp_path)
+    cached = offline.history(60, quote_type="ask")
+
+    assert cached.equals(expected)
+    assert cached.attrs["quote_type"] == "ask"
+    assert cached.attrs["cached"] is True
+    assert "lokaler Cache" in cached.attrs["provider"]
 
 
 def test_week_defaults_to_thirty_minute_candles():

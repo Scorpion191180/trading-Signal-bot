@@ -706,12 +706,13 @@ class DataStore:
                     expected_low = float(horizon_value.get("expected_low", forecast.forecast_low))
                     expected_high = float(horizon_value.get("expected_high", forecast.forecast_high))
                     return_percent = (observed_price / forecast.entry_price - 1) * 100
+                    minimum_move = max(float(forecast.spread_percent or 0.0), 0.15)
                     if "STEIGEND" in direction:
-                        direction_hit = return_percent > 0
+                        direction_hit = return_percent > minimum_move
                     elif "FALLEND" in direction:
-                        direction_hit = return_percent < 0
+                        direction_hit = return_percent < -minimum_move
                     else:
-                        direction_hit = abs(return_percent) <= 0.15
+                        direction_hit = abs(return_percent) <= minimum_move
                     session.add(
                         FocusForecastOutcome(
                             forecast_id=forecast.id,
@@ -793,6 +794,7 @@ class DataStore:
         start_at: datetime | None = None,
         end_at: datetime | None = None,
         limit: int = 500,
+        model_version: str | tuple[str, ...] | None = None,
     ) -> list[dict[str, object]]:
         """Liefert frühere Horizont-Prognosen an ihrer damaligen Zielzeit für den Chart."""
 
@@ -801,6 +803,11 @@ class DataStore:
         normalized = symbol.upper().strip()
         with self.sessions() as session:
             query = select(FocusForecast).where(FocusForecast.symbol == normalized)
+            if model_version is not None:
+                if isinstance(model_version, str):
+                    query = query.where(FocusForecast.model_version == model_version)
+                else:
+                    query = query.where(FocusForecast.model_version.in_(model_version))
             if start_at is not None:
                 query = query.where(
                     FocusForecast.forecast_at

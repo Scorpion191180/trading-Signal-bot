@@ -4,9 +4,22 @@ from datetime import UTC, datetime
 
 import pandas as pd
 
-from src.focus.analysis import FocusPosition, IntradaySignal
-from src.focus.charts import day_signal_chart
+from src.focus.analysis import FocusPosition, IntradaySignal, TrendForecast
+from src.focus.charts import _trading_minute_target, day_signal_chart
 from src.focus.quote import LiveQuote
+
+
+def test_forecast_target_skips_closed_market_and_weekend():
+    friday = pd.Timestamp("2026-08-14 22:30", tz="Europe/Berlin")
+
+    assert _trading_minute_target(friday, 60) == pd.Timestamp(
+        "2026-08-17 08:00",
+        tz="Europe/Berlin",
+    )
+    assert _trading_minute_target(friday, 120) == pd.Timestamp(
+        "2026-08-17 09:00",
+        tz="Europe/Berlin",
+    )
 
 
 def test_day_signal_chart_contains_live_price_position_and_signal():
@@ -109,7 +122,10 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     )
     assert len(minute_figure.data[0].x) == 240
     assert minute_figure.data[1].name == "Minutenverlauf"
-    assert minute_figure.layout.xaxis.range is None
+    assert minute_figure.layout.xaxis.range is not None
+    assert pd.Timestamp(minute_figure.layout.xaxis.range[0]) < quiet_minutes.index[0].tz_convert("Europe/Berlin")
+    assert pd.Timestamp(minute_figure.layout.xaxis.range[1]) > quiet_minutes.index[-1].tz_convert("Europe/Berlin")
+    assert minute_figure.layout.yaxis.autorange is False
     assert minute_figure.layout.xaxis.rangebreaks
 
     line_figure = day_signal_chart(
@@ -215,6 +231,9 @@ def test_historical_forecast_is_drawn_at_its_target_time():
         "",
         0,
         True,
+        trend_forecasts=(
+            TrendForecast(120, "STEIGEND", 17.55, 16.75, 17.85, 61.0),
+        ),
     )
     target_at = datetime(2026, 8, 12, 9, 0, tzinfo=UTC)
     history = [
@@ -241,9 +260,17 @@ def test_historical_forecast_is_drawn_at_its_target_time():
     )
 
     forecast_trace = next(trace for trace in figure.data if trace.name.startswith("Damals 60 Min"))
+    current_trace = next(trace for trace in figure.data if trace.name == "Aktuelle Prognose")
     assert pd.Timestamp(forecast_trace.x[0]).tz_convert("UTC") == pd.Timestamp(target_at)
     assert forecast_trace.marker.color[0] == "#22c55e"
     assert "1/1 (100 %)" in forecast_trace.name
+    assert forecast_trace.line.width >= 3
+    assert forecast_trace.marker.size >= 6
+    assert current_trace.line.width >= 3
+    assert current_trace.marker.size >= 8
+    assert pd.Timestamp(figure.layout.xaxis.range[1]) > pd.Timestamp(current_trace.x[-1])
+    assert float(figure.layout.yaxis.range[0]) < 16.75
+    assert float(figure.layout.yaxis.range[1]) > 17.85
 
     zoomed = day_signal_chart(
         candles,
@@ -263,3 +290,18 @@ def test_historical_forecast_is_drawn_at_its_target_time():
     )
     assert zoomed.layout.yaxis.autorange is False
     assert tuple(zoomed.layout.yaxis.range) == (17.0, 17.4)
+
+    stale_overview = day_signal_chart(
+        candles,
+        quote,
+        signal,
+        FocusPosition(),
+        [],
+        axis_ranges={
+            "x": [candles.index[0], candles.index[-1]],
+            "y": [16.8, 18.2],
+        },
+    )
+    assert pd.Timestamp(stale_overview.layout.xaxis.range[1]) > pd.Timestamp(current_trace.x[-1])
+    assert float(stale_overview.layout.yaxis.range[0]) < 16.75
+    assert float(stale_overview.layout.yaxis.range[1]) > 17.85

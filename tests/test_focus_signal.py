@@ -21,6 +21,7 @@ from src.focus.analysis import (
     analyze_timeframes,
     build_intraday_signal,
     build_market_signal,
+    build_strategy_ensemble,
 )
 from src.focus.data import load_dwave_timeframes, resample_ohlcv
 
@@ -172,7 +173,8 @@ def test_microtrend_continuation_detects_four_candle_staircase_after_pullback():
     assert continuation.event == MICROTREND_CONTINUATION_EVENT
     assert continuation.breakout_level == 18.185
     assert continuation.stop_loss < 18.170
-    assert continuation.target > 18.50
+    assert continuation.target > 18.19
+    assert (continuation.target - 18.19) / (18.19 - continuation.stop_loss) >= 2.1
 
 
 def test_profit_exhaustion_requires_red_reversal_after_extreme_rsi():
@@ -250,6 +252,43 @@ def test_short_term_confirmation_creates_buy_and_profitable_add_signal():
     assert [item.minutes for item in buy.trend_forecasts] == [5, 15, 30, 60, 120]
     assert all(item.expected_low < item.expected_price < item.expected_high for item in buy.trend_forecasts)
     assert any("OTT/UT" in vote for vote in buy.strategy_votes)
+
+
+def test_five_minute_forecast_reacts_to_fast_bearish_price_reversal():
+    now = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+    baseline_frames = _frames(now)
+    baseline_analyses, baseline_enriched, _ = analyze_timeframes(baseline_frames)
+    baseline = build_strategy_ensemble(
+        baseline_analyses,
+        baseline_enriched,
+        float(baseline_frames["1m"]["close"].iloc[-1]),
+    )
+
+    reversal_frames = {key: frame.copy() for key, frame in baseline_frames.items()}
+    minute = reversal_frames["1m"]
+    close_column = minute.columns.get_loc("close")
+    open_column = minute.columns.get_loc("open")
+    high_column = minute.columns.get_loc("high")
+    low_column = minute.columns.get_loc("low")
+    reversal_closes = float(minute["close"].iloc[-9]) - np.linspace(0.01, 0.32, 8)
+    for offset, close in enumerate(reversal_closes, start=len(minute) - 8):
+        previous_close = float(minute["close"].iloc[offset - 1])
+        minute.iloc[offset, close_column] = close
+        minute.iloc[offset, open_column] = previous_close
+        minute.iloc[offset, high_column] = max(previous_close, close) + 0.02
+        minute.iloc[offset, low_column] = min(previous_close, close) - 0.02
+
+    reversal_analyses, reversal_enriched, errors = analyze_timeframes(reversal_frames)
+    assert errors == {}
+    reversal = build_strategy_ensemble(
+        reversal_analyses,
+        reversal_enriched,
+        float(minute["close"].iloc[-1]),
+    )
+
+    assert baseline.horizons[0].direction == "STEIGEND"
+    assert reversal.horizons[0].direction != "STEIGEND"
+    assert reversal.horizons[0].expected_price < baseline.horizons[0].expected_price
 
 
 def test_add_signal_does_not_average_down():

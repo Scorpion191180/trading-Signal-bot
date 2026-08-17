@@ -2,22 +2,44 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 
 import streamlit as st
 
 from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
-from src.focus.page import focus_page
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "1.3-long-forecast-overlay"
+SERVICE_SCHEMA_VERSION = "1.4-forecast-v7"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+
+def _load_focus_page():
+    """Lädt zusammengehörige Fokusmodule nach einem Versionswechsel einmal atomar neu."""
+
+    package = importlib.import_module("src.focus")
+    module_names = (
+        "src.focus.analysis",
+        "src.focus.stock3",
+        "src.focus.paper",
+        "src.focus.replay",
+        "src.focus.charts",
+        "src.focus.page",
+    )
+    modules = [importlib.import_module(name) for name in module_names]
+    if getattr(package, "_loaded_service_schema", None) != SERVICE_SCHEMA_VERSION:
+        modules = [importlib.reload(module) for module in modules]
+        package._loaded_service_schema = SERVICE_SCHEMA_VERSION
+    return modules[-1].focus_page
+
+
+focus_page = _load_focus_page()
 st.markdown(
     """
     <style>

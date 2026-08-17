@@ -23,6 +23,35 @@ CANDLE_INTERVAL_LABELS = {
 }
 
 
+def _trading_minute_target(timestamp: pd.Timestamp, minutes: int) -> pd.Timestamp:
+    """Verschiebt einen Horizont über die L&S-Handelspause auf die nächste Sitzung."""
+
+    cursor = pd.Timestamp(timestamp)
+    remaining = max(int(minutes), 0)
+    while remaining:
+        if cursor.weekday() >= 5 or cursor.hour >= 23:
+            cursor = (
+                cursor.normalize()
+                + pd.Timedelta(1, unit="D")
+                + pd.Timedelta(450, unit="min")
+            )
+            while cursor.weekday() >= 5:
+                cursor += pd.Timedelta(1, unit="D")
+            continue
+        session_open = cursor.normalize() + pd.Timedelta(450, unit="min")
+        if cursor < session_open:
+            cursor = session_open
+        session_close = cursor.normalize() + pd.Timedelta(23, unit="h")
+        available = max(int((session_close - cursor).total_seconds() // 60), 0)
+        if remaining < available:
+            return cursor + pd.Timedelta(remaining, unit="min")
+        if remaining == available:
+            return session_close - pd.Timedelta(1, unit="s")
+        remaining -= available
+        cursor = session_close
+    return cursor
+
+
 def _candle_trace_label(minutes: int) -> str:
     if minutes < 60:
         value, unit = minutes, "Minute" if minutes == 1 else "Minuten"
@@ -152,7 +181,8 @@ def day_signal_chart(
         )
     if "Prognose" in active_overlays and signal.trend_forecasts and period_label == "Intraday":
         forecast_x = [current_x] + [
-            current_x + pd.Timedelta(minutes=item.minutes) for item in signal.trend_forecasts
+            _trading_minute_target(current_x, int(item.minutes))
+            for item in signal.trend_forecasts
         ]
         forecast_y = [quote.bid] + [item.expected_price for item in signal.trend_forecasts]
         upper_error = [0.0] + [
@@ -168,17 +198,22 @@ def day_signal_chart(
                 mode="lines+markers+text",
                 name="Aktuelle Prognose",
                 text=[""] + [f"{item.minutes}m" for item in signal.trend_forecasts],
-                textposition="top center",
-                line={"color": "#38bdf8", "width": 1.5, "dash": "dot"},
-                marker={"size": 6, "color": "#38bdf8"},
+                textposition=("top center", "top left", "bottom left", "top center", "bottom center", "middle right"),
+                textfont={"size": 11, "color": "#cffafe"},
+                line={"color": "#22d3ee", "width": 4.2},
+                marker={
+                    "size": 10,
+                    "color": "#22d3ee",
+                    "line": {"width": 1.5, "color": "#ecfeff"},
+                },
                 error_y={
                     "type": "data",
                     "symmetric": False,
                     "array": upper_error,
                     "arrayminus": lower_error,
-                    "color": "rgba(56,189,248,.38)",
-                    "thickness": 1,
-                    "width": 3,
+                    "color": "rgba(34,211,238,.62)",
+                    "thickness": 1.5,
+                    "width": 4,
                 },
                 hovertemplate="Trend-Schätzung %{y:.3f} €<extra></extra>",
             )
@@ -219,6 +254,11 @@ def day_signal_chart(
         hits = sum(item.get("direction_hit") is True for item in completed)
         accuracy = hits / len(completed) * 100 if completed else None
         comparison_name = f"Damals {forecast_horizon_minutes} Min"
+        model_versions = {str(item.get("model_version", "")) for item in forecast_points}
+        if len(model_versions) == 1:
+            version = next(iter(model_versions)).replace("focus-market-", "")
+            if version:
+                comparison_name += f" · {version}"
         if accuracy is not None:
             comparison_name += f" · {hits}/{len(completed)} ({accuracy:.0f} %)"
         figure.add_trace(
@@ -227,8 +267,12 @@ def day_signal_chart(
                 y=expected_prices,
                 mode="lines+markers",
                 name=comparison_name,
-                line={"color": "rgba(167,139,250,.82)", "width": 1.7, "dash": "dash"},
-                marker={"size": 5, "color": marker_colors},
+                line={"color": "#ddd6fe", "width": 4.0, "dash": "dash"},
+                marker={
+                    "size": 6,
+                    "color": marker_colors,
+                    "line": {"width": 0.9, "color": "#f5f3ff"},
+                },
                 text=hover_text,
                 hovertemplate="%{text}<extra></extra>",
             )
@@ -388,10 +432,67 @@ def day_signal_chart(
         bordercolor=price_color,
         font={"size": 11, "color": "white"},
     )
+    forecast_times: list[pd.Timestamp] = []
+    forecast_bounds: list[float] = []
+    if "Prognose" in active_overlays and signal.trend_forecasts and period_label == "Intraday":
+        forecast_times.extend(
+            _trading_minute_target(current_x, int(item.minutes))
+            for item in signal.trend_forecasts
+        )
+        forecast_bounds.extend(
+            value
+            for item in signal.trend_forecasts
+            for value in (item.expected_low, item.expected_high)
+        )
+    if "Prognose" in active_overlays and forecast_points:
+        forecast_times.extend(
+            pd.Timestamp(item["target_at"]).tz_convert("Europe/Berlin") for item in forecast_points
+        )
+        forecast_bounds.extend(
+            value
+            for item in forecast_points
+            for value in (float(item["expected_low"]), float(item["expected_high"]))
+        )
+
+    time_candidates = [pd.Timestamp(visible.index[0]), pd.Timestamp(visible.index[-1]), *forecast_times]
+    first_visible_time = min(time_candidates)
+    last_visible_time = max(time_candidates)
+    candle_delta = pd.Timedelta(int(max(candle_minutes, 1)), unit="min")
+    time_span = max(
+        last_visible_time - first_visible_time,
+        candle_delta,
+    )
+    time_padding = max(
+        candle_delta / 2,
+        time_span * 0.015,
+    )
+    default_x_range: list[object] = [
+        first_visible_time - time_padding,
+        last_visible_time + time_padding,
+    ]
+
+    price_candidates = [
+        float(visible["low"].min()),
+        float(visible["high"].max()),
+        quote.bid,
+        quote.ask,
+        *forecast_bounds,
+    ]
+    visible_price_low = min(price_candidates)
+    visible_price_high = max(price_candidates)
+    visible_price_span = max(visible_price_high - visible_price_low, quote.bid * 0.004)
+    visible_price_center = (visible_price_low + visible_price_high) / 2
+    price_half_range = visible_price_span * 0.62
+    default_y_range: list[object] = [
+        visible_price_center - price_half_range,
+        visible_price_center + price_half_range,
+    ]
+
     xaxis: dict[str, object] = {
         "title": "",
         "uirevision": f"dwave-x-{period_label}-{candle_minutes}-{chart_style}",
-        "autorange": True,
+        "autorange": False,
+        "range": default_x_range,
         "tickformat": (
             "%H:%M"
             if period_label == "Intraday"
@@ -413,14 +514,18 @@ def day_signal_chart(
             {"bounds": ["sat", "mon"]},
         ]
     stored_ranges = axis_ranges or {}
-    if len(stored_ranges.get("x", [])) == 2:
-        xaxis["range"] = stored_ranges["x"]
-        xaxis["autorange"] = False
+    stored_x = stored_ranges.get("x", [])
+    if len(stored_x) == 2:
+        stored_x_span = pd.Timestamp(stored_x[1]) - pd.Timestamp(stored_x[0])
+        candle_x_span = pd.Timestamp(visible.index[-1]) - pd.Timestamp(visible.index[0])
+        if stored_x_span < candle_x_span * 0.75:
+            xaxis["range"] = stored_x
     yaxis: dict[str, object] = {
         "title": "",
         "side": "right",
         "uirevision": f"dwave-y-{period_label}-{candle_minutes}-{chart_style}",
-        "autorange": True,
+        "autorange": False,
+        "range": default_y_range,
         "fixedrange": False,
         "tickformat": ".3f",
         "showgrid": True,
@@ -431,9 +536,12 @@ def day_signal_chart(
         "spikecolor": "rgba(226,232,240,.75)",
         "spikethickness": 1,
     }
-    if len(stored_ranges.get("y", [])) == 2:
-        yaxis["range"] = stored_ranges["y"]
-        yaxis["autorange"] = False
+    stored_y = stored_ranges.get("y", [])
+    if len(stored_y) == 2:
+        stored_y_span = abs(float(stored_y[1]) - float(stored_y[0]))
+        default_y_span = abs(float(default_y_range[1]) - float(default_y_range[0]))
+        if stored_y_span < default_y_span * 0.75:
+            yaxis["range"] = stored_y
     figure.update_layout(
         height=525,
         margin={"l": 10, "r": 54, "t": 10, "b": 12},
@@ -444,8 +552,10 @@ def day_signal_chart(
         hoverdistance=50,
         spikedistance=-1,
         hoverlabel={"bgcolor": "#1c2529", "font": {"color": "#f8fafc"}},
-        showlegend="EMA" in active_overlays or (
-            "Prognose" in active_overlays and bool(forecast_points)
+        showlegend="EMA" in active_overlays
+        or (
+            "Prognose" in active_overlays
+            and (bool(forecast_points) or bool(signal.trend_forecasts))
         ),
         legend={"orientation": "h", "yanchor": "top", "y": 0.90, "x": 0.01},
         uirevision=f"dwave-professional-{period_label}-{candle_minutes}-{chart_style}",

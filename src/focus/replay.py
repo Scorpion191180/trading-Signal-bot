@@ -139,9 +139,9 @@ def replay_focus_day(
     selected_date: date | None = None,
     confirmation_observations: int = 2,
     forecast_store: DataStore | None = None,
-    forecast_model_version: str = "focus-market-v6-replay",
+    forecast_model_version: str = "focus-market-v7-replay",
 ) -> FocusReplayResult:
-    """Spielt v6 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
+    """Spielt v7 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
 
     if confirmation_observations < 1:
         raise ValueError("Die Zahl der Bestätigungsbeobachtungen muss positiv sein.")
