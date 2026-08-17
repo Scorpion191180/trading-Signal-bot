@@ -106,18 +106,18 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run app.py --server.port 8502
 ```
 
-Danach `http://localhost:8501` öffnen. Der Positionsstatus wird in der lokalen SQLite-Datenbank gespeichert. Broker-Zugangsdaten werden nicht benötigt oder gespeichert.
+Danach `http://localhost:8502` öffnen. Der Positionsstatus wird in der lokalen SQLite-Datenbank gespeichert. Broker-Zugangsdaten werden nicht benötigt oder gespeichert.
 
-Den unabhängigen Papier-Bot einmalig als macOS-LaunchAgent installieren:
+Web-App und unabhängigen Papier-Bot einmalig als macOS-LaunchAgents installieren:
 
 ```bash
-.venv/bin/python scripts/install_background_bot.py
+./scripts/install_background_services.command
 ```
 
-Der Dienst startet sofort und danach automatisch bei jeder macOS-Anmeldung. Sein Heartbeat steht direkt in der Kontozeile der App. Der Mac muss eingeschaltet, angemeldet, wach und mit dem Internet verbunden sein; während Ruhezustand oder Ausschalten kann der lokale Dienst keine neuen Signale verarbeiten. Protokolle liegen unter `data/dwave-paper-bot.log` und `data/dwave-paper-bot.error.log`.
+Beide Dienste starten sofort und danach automatisch bei jeder macOS-Anmeldung. macOS startet sie nach einem Absturz erneut; die Web-App prüft außerdem ihre lokale Gesundheitsadresse und ersetzt einen nicht mehr antwortenden Streamlit-Prozess. Das Installationsskript muss nur einmal in einem normalen macOS-Terminal gestartet werden. Der Bot-Heartbeat steht direkt in der Kontozeile der App. Der Mac muss eingeschaltet, angemeldet, wach und mit dem Internet verbunden sein; während Ruhezustand oder Ausschalten kann der lokale Dienst keine neuen Signale verarbeiten. Protokolle liegen unter `data/web-app.log`, `data/web-app.error.log`, `data/dwave-paper-bot.log` und `data/dwave-paper-bot.error.log`.
 
 ## Tests
 
