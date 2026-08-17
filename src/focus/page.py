@@ -36,6 +36,7 @@ from .display import (
 )
 from .lang_schwarz import LangSchwarzQuoteProvider
 from .paper import PAPER_STRATEGY_VERSION, PaperAccount, current_paper_account, paper_order_events
+from .quality import forecast_quality_map
 from .quote import (
     LiveQuote,
     TradegateQuoteProvider,
@@ -152,7 +153,7 @@ def _cached_stock3_minute_history() -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_today_replay() -> dict[str, object]:
-    """Berechnet den v7-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
+    """Berechnet den v8-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
 
     provider = Stock3LangSchwarzProvider()
     result = replay_focus_day(
@@ -672,7 +673,7 @@ def _render_paper_account(
 def _validation_text(metrics: dict[str, float | int | None]) -> str:
     recorded = int(metrics["recorded"] or 0)
     completed = int(metrics["completed"] or 0)
-    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der neuen Strategie v7"
+    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der Strategie v8"
     if completed < 20:
         forecast_label = "Prognose" if recorded == 1 else "Prognosen"
         return (
@@ -793,7 +794,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
     completed = int(summary["completed_trades"])
     costs = float(summary["transaction_costs"])
     confirmations = int(summary["confirmation_observations"])
-    note = "kein kostenbereinigtes v7-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
+    note = "kein kostenbereinigtes v8-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
     orders = summary.get("orders", ())
     order_labels: list[str] = []
     if isinstance(orders, (list, tuple)):
@@ -870,6 +871,7 @@ def _automatic_day_chart(store: DataStore) -> None:
         enforce_liquidity_filter=False,
         external_context=external_context,
     )
+    quality_by_horizon = forecast_quality_map(store, PAPER_STRATEGY_VERSION)
     paper_account = current_paper_account(store, quote.bid)
     bot_status = store.get_focus_bot_status()
     events = paper_order_events(store, paper_account.portfolio_id, candles.index[-1])
@@ -1009,6 +1011,7 @@ def _automatic_day_chart(store: DataStore) -> None:
         overlays=set(overlays or ()),
         historical_forecasts=historical_forecasts,
         forecast_horizon_minutes=int(forecast_horizon),
+        forecast_quality=quality_by_horizon,
         axis_ranges=axis_ranges,
     )
     st.plotly_chart(

@@ -202,6 +202,61 @@ def test_focus_forecast_metrics_keep_strategy_versions_separate(store):
     assert store.focus_forecast_chart_points(model_version="focus-market-v3", horizon_minutes=15) == []
 
 
+def test_focus_forecast_quality_uses_later_verification_before_release(store):
+    start = datetime(2026, 8, 3, 8, 0, tzinfo=UTC)
+    for index in range(40):
+        forecast_at = start + timedelta(minutes=index * 30)
+        high_confidence = index % 2 == 0
+        confidence = 80.0 if high_confidence else 50.0
+        future_price = 10.1 if high_confidence else 9.9
+        store.record_focus_forecast(
+            symbol="RQ0",
+            provider="Qualitätstest",
+            forecast_at=forecast_at,
+            entry_price=10.0,
+            bid=9.99,
+            ask=10.01,
+            direction="STEIGEND",
+            model_score=confidence,
+            forecast_low=9.8,
+            forecast_high=10.2,
+            market_regime="Test",
+            strategy_votes=(),
+            spread_percent=0.1,
+            horizon_forecasts=(
+                {
+                    "minutes": 15,
+                    "direction": "STEIGEND",
+                    "expected_price": 10.05,
+                    "expected_low": 9.8,
+                    "expected_high": 10.2,
+                    "confidence": confidence,
+                },
+            ),
+            model_version="focus-market-v8",
+        )
+        store.evaluate_focus_forecasts(
+            "RQ0",
+            [(forecast_at + timedelta(minutes=15), future_price)],
+            provider="Qualitätstest",
+        )
+
+    quality = store.focus_forecast_quality(
+        symbol="RQ0",
+        horizon_minutes=15,
+        model_version="focus-market-v8",
+        min_calibration=8,
+        min_verification=8,
+    )
+
+    assert quality["qualified"] is True
+    assert quality["threshold"] == 80.0
+    assert quality["calibration_samples"] == 12
+    assert quality["verification_samples"] == 8
+    assert quality["verification_accuracy"] == 100.0
+    assert quality["coverage"] == 50.0
+
+
 def test_focus_forecast_direction_must_beat_recorded_spread(store):
     forecast_at = datetime(2026, 8, 13, 8, 1, tzinfo=UTC)
     store.record_focus_forecast(

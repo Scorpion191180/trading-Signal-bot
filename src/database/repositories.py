@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from bisect import bisect_left
 from dataclasses import asdict
@@ -775,6 +776,137 @@ class DataStore:
             ),
         }
 
+    def focus_forecast_quality(
+        self,
+        *,
+        symbol: str,
+        horizon_minutes: int,
+        model_version: str | tuple[str, ...],
+        target_accuracy: float = 75.0,
+        min_calibration: int = 30,
+        min_verification: int = 30,
+    ) -> dict[str, float | int | bool | None]:
+        """Prueft eine Konfidenzschwelle chronologisch, bevor Prognosen freigegeben werden.
+
+        Die aelteren 60 Prozent bestimmen die Schwelle. Nur der spaetere, dabei
+        unangetastete Abschnitt entscheidet, ob die Zielquote wirklich erreicht
+        wurde. So kann eine nachtraeglich passend gewaehlte Schwelle nicht dieselben
+        Beobachtungen zugleich zum Auswaehlen und zum Belegen verwenden.
+        """
+
+        if horizon_minutes not in FOCUS_FORECAST_HORIZONS:
+            raise ValueError("Dieser Prognosehorizont wird nicht unterstützt.")
+        normalized = symbol.upper().strip()
+        versions = (model_version,) if isinstance(model_version, str) else model_version
+        with self.sessions() as session:
+            rows = session.execute(
+                select(FocusForecast, FocusForecastOutcome)
+                .join(
+                    FocusForecastOutcome,
+                    FocusForecast.id == FocusForecastOutcome.forecast_id,
+                )
+                .where(
+                    FocusForecast.symbol == normalized,
+                    FocusForecast.model_version.in_(versions),
+                    FocusForecastOutcome.horizon_minutes == horizon_minutes,
+                )
+                .order_by(FocusForecastOutcome.observed_at.asc())
+            ).all()
+
+        samples: list[tuple[float, bool]] = []
+        for forecast, outcome in rows:
+            try:
+                horizons = json.loads(forecast.horizons_json or "[]")
+                horizon = next(
+                    item
+                    for item in horizons
+                    if isinstance(item, dict)
+                    and int(item.get("minutes", 0)) == horizon_minutes
+                )
+                confidence = float(horizon["confidence"])
+            except (StopIteration, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if math.isfinite(confidence):
+                samples.append((confidence, bool(outcome.direction_hit)))
+
+        total = len(samples)
+        raw_accuracy = (
+            sum(hit for _confidence, hit in samples) / total * 100 if total else None
+        )
+        result: dict[str, float | int | bool | None] = {
+            "qualified": False,
+            "target_accuracy": float(target_accuracy),
+            "threshold": None,
+            "total": total,
+            "raw_accuracy": raw_accuracy,
+            "calibration_samples": 0,
+            "calibration_accuracy": None,
+            "verification_samples": 0,
+            "verification_accuracy": None,
+            "verification_lower_bound": None,
+            "coverage": 0.0,
+        }
+        required_total = min_calibration + min_verification
+        if total < required_total:
+            return result
+
+        split = max(int(total * 0.60), min_calibration)
+        split = min(split, total - min_verification)
+        calibration = samples[:split]
+        verification = samples[split:]
+        candidates: list[tuple[int, float, float]] = []
+        for threshold in sorted({confidence for confidence, _hit in calibration}):
+            selected = [hit for confidence, hit in calibration if confidence >= threshold]
+            if len(selected) < min_calibration:
+                continue
+            accuracy = sum(selected) / len(selected) * 100
+            if accuracy >= target_accuracy:
+                candidates.append((len(selected), threshold, accuracy))
+        if not candidates:
+            return result
+
+        calibration_samples, threshold, calibration_accuracy = max(
+            candidates,
+            key=lambda candidate: (candidate[0], -candidate[1]),
+        )
+        verified = [hit for confidence, hit in verification if confidence >= threshold]
+        verification_samples = len(verified)
+        verification_accuracy = (
+            sum(verified) / verification_samples * 100 if verification_samples else None
+        )
+        lower_bound = None
+        if verification_samples:
+            successes = sum(verified)
+            probability = successes / verification_samples
+            z = 1.959963984540054
+            denominator = 1 + z * z / verification_samples
+            center = probability + z * z / (2 * verification_samples)
+            margin = z * math.sqrt(
+                probability * (1 - probability) / verification_samples
+                + z * z / (4 * verification_samples**2)
+            )
+            lower_bound = max((center - margin) / denominator * 100, 0.0)
+
+        result.update(
+            {
+                "threshold": threshold,
+                "calibration_samples": calibration_samples,
+                "calibration_accuracy": calibration_accuracy,
+                "verification_samples": verification_samples,
+                "verification_accuracy": verification_accuracy,
+                "verification_lower_bound": lower_bound,
+                "coverage": verification_samples / len(verification) * 100,
+                "qualified": bool(
+                    verification_samples >= min_verification
+                    and verification_accuracy is not None
+                    and verification_accuracy >= target_accuracy
+                    and lower_bound is not None
+                    and lower_bound >= 60.0
+                ),
+            }
+        )
+        return result
+
     def list_focus_forecasts(self, *, symbol: str = "RQ0", limit: int = 100) -> list[FocusForecast]:
         with self.sessions() as session:
             return list(
@@ -861,6 +993,8 @@ class DataStore:
                     "expected_high": float(horizon["expected_high"]),
                     "direction": str(horizon["direction"]),
                     "confidence": float(horizon["confidence"]),
+                    "released": bool(horizon.get("released", False)),
+                    "release_reason": str(horizon.get("release_reason", "Nur Prüfprognose")),
                     "observed_at": _aware_utc(outcome.observed_at) if outcome else None,
                     "observed_price": float(outcome.observed_price) if outcome else None,
                     "direction_hit": bool(outcome.direction_hit) if outcome else None,

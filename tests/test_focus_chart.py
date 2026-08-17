@@ -240,12 +240,14 @@ def test_historical_forecast_is_drawn_at_its_target_time():
         {
             "forecast_at": datetime(2026, 8, 12, 8, 0, tzinfo=UTC),
             "target_at": target_at,
+            "entry_price": 17.1,
             "expected_price": 17.15,
             "expected_low": 17.0,
             "expected_high": 17.3,
             "direction": "STEIGEND",
             "observed_price": 17.2,
             "direction_hit": True,
+            "released": True,
         }
     ]
 
@@ -259,14 +261,16 @@ def test_historical_forecast_is_drawn_at_its_target_time():
         forecast_horizon_minutes=60,
     )
 
-    forecast_trace = next(trace for trace in figure.data if trace.name.startswith("Damals 60 Min"))
-    current_trace = next(trace for trace in figure.data if trace.name == "Aktuelle Prognose")
+    forecast_trace = next(trace for trace in figure.data if trace.name.startswith("Ziel nach 60 Min"))
+    current_trace = next(trace for trace in figure.data if trace.name.startswith("Modelltest"))
     assert pd.Timestamp(forecast_trace.x[0]).tz_convert("UTC") == pd.Timestamp(target_at)
     assert forecast_trace.marker.color[0] == "#22c55e"
     assert "1/1 (100 %)" in forecast_trace.name
     assert forecast_trace.line.width >= 3
     assert forecast_trace.marker.size >= 6
-    assert current_trace.line.width >= 3
+    issued_trace = next(trace for trace in figure.data if trace.name.startswith("Erstellt"))
+    assert pd.Timestamp(issued_trace.x[0]).tz_convert("UTC") == pd.Timestamp(history[0]["forecast_at"])
+    assert current_trace.line.width >= 2.5
     assert current_trace.marker.size >= 8
     assert pd.Timestamp(figure.layout.xaxis.range[1]) > pd.Timestamp(current_trace.x[-1])
     assert float(figure.layout.yaxis.range[0]) < 16.75

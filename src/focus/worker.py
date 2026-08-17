@@ -31,6 +31,7 @@ from .context import FocusContextProvider
 from .data import resample_ohlcv
 from .paper import PAPER_STRATEGY_VERSION, PaperAccount, current_paper_account, run_paper_account
 from .quote import LiveQuote, resample_intraday_candles
+from .quality import forecast_quality_map, released_horizon_payloads
 from .stock3 import Stock3LangSchwarzProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -216,6 +217,7 @@ class FocusPaperWorker:
             and signal.forecast_low is not None
             and signal.forecast_high is not None
         ):
+            quality = forecast_quality_map(self.store, PAPER_STRATEGY_VERSION)
             self.store.record_focus_forecast(
                 symbol=DWAVE_INSTRUMENT.exchange_symbol,
                 provider=quote.venue,
@@ -230,17 +232,7 @@ class FocusPaperWorker:
                 market_regime=signal.market_regime,
                 strategy_votes=signal.strategy_votes,
                 spread_percent=signal.spread_percent or 0.0,
-                horizon_forecasts=tuple(
-                    {
-                        "minutes": item.minutes,
-                        "direction": item.direction,
-                        "expected_price": item.expected_price,
-                        "expected_low": item.expected_low,
-                        "expected_high": item.expected_high,
-                        "confidence": item.confidence,
-                    }
-                    for item in signal.trend_forecasts
-                ),
+                horizon_forecasts=released_horizon_payloads(signal, quality),
                 model_version=PAPER_STRATEGY_VERSION,
             )
 
