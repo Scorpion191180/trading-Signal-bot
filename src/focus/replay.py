@@ -63,6 +63,8 @@ class FocusReplayResult:
     confirmation_observations: int
     rejected_entries: tuple[tuple[str, int], ...]
     orders: tuple[ReplayOrder, ...]
+    saved_forecasts: int = 0
+    evaluated_forecasts: int = 0
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -136,8 +138,10 @@ def replay_focus_day(
     daily: pd.DataFrame,
     selected_date: date | None = None,
     confirmation_observations: int = 2,
+    forecast_store: DataStore | None = None,
+    forecast_model_version: str = "focus-market-v6-replay",
 ) -> FocusReplayResult:
-    """Spielt v5 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
+    """Spielt v6 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
 
     if confirmation_observations < 1:
         raise ValueError("Die Zahl der Bestätigungsbeobachtungen muss positiv sein.")
@@ -155,6 +159,9 @@ def replay_focus_day(
     equity_peak = PAPER_STARTING_CAPITAL
     max_drawdown = 0.0
     rejected_entries: Counter[str] = Counter()
+    saved_forecasts = 0
+    evaluated_forecasts = 0
+    forecast_provider = "Lang & Schwarz · historischer Replay"
 
     try:
         for timestamp, candle in bid_day.iterrows():
@@ -211,6 +218,35 @@ def replay_focus_day(
                 require_volume_confirmation=False,
                 enforce_liquidity_filter=False,
             )
+            if forecast_store is not None and signal.trend_forecasts:
+                _forecast, inserted = forecast_store.record_focus_forecast(
+                    symbol=DWAVE_INSTRUMENT.exchange_symbol,
+                    provider=forecast_provider,
+                    forecast_at=signal_at,
+                    entry_price=close_bid,
+                    bid=close_bid,
+                    ask=close_bid + spread,
+                    direction=signal.forecast_direction,
+                    model_score=signal.score,
+                    forecast_low=signal.forecast_low or close_bid,
+                    forecast_high=signal.forecast_high or close_bid,
+                    market_regime=signal.market_regime,
+                    strategy_votes=signal.strategy_votes,
+                    spread_percent=quote.spread_percent,
+                    horizon_forecasts=tuple(
+                        {
+                            "minutes": item.minutes,
+                            "direction": item.direction,
+                            "expected_price": item.expected_price,
+                            "expected_low": item.expected_low,
+                            "expected_high": item.expected_high,
+                            "confidence": item.confidence,
+                        }
+                        for item in signal.trend_forecasts
+                    ),
+                    model_version=forecast_model_version,
+                )
+                saved_forecasts += int(inserted)
             evaluated += 1
             buy_signals += signal.action == "BUY"
             sell_signals += signal.action == "SELL"
@@ -242,6 +278,16 @@ def replay_focus_day(
             equity_peak = max(equity_peak, account.equity)
             if equity_peak > 0:
                 max_drawdown = max(max_drawdown, (equity_peak - account.equity) / equity_peak * 100)
+
+        if forecast_store is not None:
+            evaluated_forecasts = forecast_store.evaluate_focus_forecasts(
+                DWAVE_INSTRUMENT.exchange_symbol,
+                [
+                    ((timestamp + timedelta(minutes=1)).to_pydatetime(), float(price))
+                    for timestamp, price in bid_day["close"].items()
+                ],
+                provider=forecast_provider,
+            )
 
         final_bid = float(bid_day["close"].iloc[-1])
         account = current_paper_account(store, final_bid)
@@ -284,6 +330,8 @@ def replay_focus_day(
             confirmation_observations=confirmation_observations,
             rejected_entries=tuple(rejected_entries.most_common()),
             orders=orders,
+            saved_forecasts=saved_forecasts,
+            evaluated_forecasts=evaluated_forecasts,
         )
     finally:
         engine.dispose()

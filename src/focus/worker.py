@@ -230,6 +230,17 @@ class FocusPaperWorker:
                 market_regime=signal.market_regime,
                 strategy_votes=signal.strategy_votes,
                 spread_percent=signal.spread_percent or 0.0,
+                horizon_forecasts=tuple(
+                    {
+                        "minutes": item.minutes,
+                        "direction": item.direction,
+                        "expected_price": item.expected_price,
+                        "expected_low": item.expected_low,
+                        "expected_high": item.expected_high,
+                        "confidence": item.confidence,
+                    }
+                    for item in signal.trend_forecasts
+                ),
                 model_version=PAPER_STRATEGY_VERSION,
             )
 

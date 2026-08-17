@@ -175,3 +175,91 @@ def test_distant_entry_does_not_flatten_the_day_chart():
     figure = day_signal_chart(candles, quote, signal, FocusPosition(True, 25.0, 10), [])
 
     assert not any("Einstand" in annotation.text for annotation in figure.layout.annotations)
+
+
+def test_historical_forecast_is_drawn_at_its_target_time():
+    index = pd.date_range("2026-08-12 08:00", periods=90, freq="1min", tz="UTC")
+    candles = pd.DataFrame(
+        {"open": 17.0, "high": 17.2, "low": 16.9, "close": 17.1, "volume": 100.0},
+        index=index,
+    )
+    quote = LiveQuote(
+        "stock3",
+        "Lang & Schwarz",
+        "US26740W1099",
+        17.1,
+        17.12,
+        None,
+        None,
+        17.1,
+        17.2,
+        16.9,
+        0.0,
+        None,
+        datetime(2026, 8, 12, 9, 30, tzinfo=UTC),
+        10,
+    )
+    signal = IntradaySignal(
+        "WAIT",
+        "WARTEN",
+        50,
+        "neutral",
+        "#64748b",
+        17.1,
+        None,
+        None,
+        None,
+        None,
+        "bis 120 Minuten",
+        (),
+        "",
+        0,
+        True,
+    )
+    target_at = datetime(2026, 8, 12, 9, 0, tzinfo=UTC)
+    history = [
+        {
+            "forecast_at": datetime(2026, 8, 12, 8, 0, tzinfo=UTC),
+            "target_at": target_at,
+            "expected_price": 17.15,
+            "expected_low": 17.0,
+            "expected_high": 17.3,
+            "direction": "STEIGEND",
+            "observed_price": 17.2,
+            "direction_hit": True,
+        }
+    ]
+
+    figure = day_signal_chart(
+        candles,
+        quote,
+        signal,
+        FocusPosition(),
+        [],
+        historical_forecasts=history,
+        forecast_horizon_minutes=60,
+    )
+
+    forecast_trace = next(trace for trace in figure.data if trace.name.startswith("Damals 60 Min"))
+    assert pd.Timestamp(forecast_trace.x[0]).tz_convert("UTC") == pd.Timestamp(target_at)
+    assert forecast_trace.marker.color[0] == "#22c55e"
+    assert "1/1 (100 %)" in forecast_trace.name
+
+    zoomed = day_signal_chart(
+        candles,
+        quote,
+        signal,
+        FocusPosition(),
+        [],
+        axis_ranges={
+            "x": ["2026-08-12T08:30:00+00:00", "2026-08-12T09:00:00+00:00"],
+            "y": [17.0, 17.4],
+        },
+    )
+    assert zoomed.layout.xaxis.autorange is False
+    assert tuple(zoomed.layout.xaxis.range) == (
+        "2026-08-12T08:30:00+00:00",
+        "2026-08-12T09:00:00+00:00",
+    )
+    assert zoomed.layout.yaxis.autorange is False
+    assert tuple(zoomed.layout.yaxis.range) == (17.0, 17.4)

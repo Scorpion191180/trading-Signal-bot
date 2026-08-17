@@ -132,7 +132,7 @@ class IntradaySignal:
 
 @dataclass(frozen=True)
 class TrendForecast:
-    """Probabilistische Kurszone fuer einen festen, kurzen Vorwaertshorizont."""
+    """Probabilistische Kurszone fuer einen festen Vorwaertshorizont."""
 
     minutes: int
     direction: str
@@ -144,7 +144,7 @@ class TrendForecast:
 
 @dataclass(frozen=True)
 class StrategyEnsemble:
-    """Gemeinsame 5–30-Minuten-Einschätzung mehrerer unabhängiger Ansätze."""
+    """Gemeinsame 5–120-Minuten-Einschätzung mehrerer unabhängiger Ansätze."""
 
     score: float
     direction: str
@@ -792,22 +792,32 @@ def _trend_horizons(
     price: float,
     ensemble_score: float,
 ) -> tuple[TrendForecast, ...]:
-    """Leitet 5-/15-/30-Minuten-Trends aus abgeschlossenen Zeitebenen und ATR ab."""
+    """Leitet 5- bis 120-Minuten-Trends aus abgeschlossenen Zeitebenen und ATR ab."""
 
     weight_sets = {
         5: {"1m": 0.50, "5m": 0.35, "15m": 0.05},
         15: {"1m": 0.20, "5m": 0.45, "15m": 0.25},
         30: {"1m": 0.10, "5m": 0.30, "15m": 0.40, "1h": 0.10},
+        60: {"5m": 0.15, "15m": 0.35, "1h": 0.30, "1d": 0.10},
+        120: {"5m": 0.10, "15m": 0.25, "1h": 0.35, "1d": 0.15},
     }
     one_atr = _latest_finite(enriched["1m"], "atr_14", price * 0.003)
     five_atr = _latest_finite(enriched["5m"], "atr_14", price * 0.006)
+    hour_atr = _latest_finite(enriched["1h"], "atr_14", price * 0.018)
     forecasts: list[TrendForecast] = []
     for minutes, weights in weight_sets.items():
         timeframe_weight = sum(weights.values())
         horizon_score = sum(analyses[key].score * weight for key, weight in weights.items())
         horizon_score += ensemble_score * (1 - timeframe_weight)
         direction = "STEIGEND" if horizon_score >= 58 else "FALLEND" if horizon_score <= 42 else "SEITWÄRTS"
-        volatility = max(one_atr * np.sqrt(minutes), five_atr * np.sqrt(minutes / 5), price * 0.0015)
+        volatility_inputs = [
+            one_atr * np.sqrt(minutes),
+            five_atr * np.sqrt(minutes / 5),
+            price * 0.0015,
+        ]
+        if minutes >= 60:
+            volatility_inputs.append(hour_atr * np.sqrt(minutes / 60))
+        volatility = max(volatility_inputs)
         directional_shift = ((horizon_score - 50) / 50) * volatility * 0.55
         expected = max(price + directional_shift, 0.001)
         confidence = min(88.0, 45.0 + abs(horizon_score - 50) * 1.45)
@@ -1042,7 +1052,7 @@ def build_intraday_signal(
             None,
             ADAPTIVE_HOLDING_PERIOD,
             (f"Die letzte abgeschlossene 1-Minuten-Kerze ist {age_minutes:.1f} Minuten alt.",),
-            "Für einen 5–30-Minuten-Trade sind verzögerte Gratisdaten nicht sicher genug.",
+            "Für einen kurzfristigen Trade bis 120 Minuten sind verzögerte Gratisdaten nicht sicher genug.",
             age_minutes,
             market_open,
             forecast.direction,
@@ -1178,7 +1188,7 @@ def build_intraday_signal(
     color = "#f59e0b"
     warning = "Kein Trade, bis 1- und 5-Minuten-Chart gemeinsam bestätigen."
     if liquidity_veto:
-        warning = "Kein Einstieg: Der Geld-/Brief-Spread ist für einen 5–30-Minuten-Trade zu groß."
+        warning = "Kein Einstieg: Der Geld-/Brief-Spread ist für diesen kurzfristigen Trade zu groß."
     if external_risk_veto:
         warning = "Kein Einstieg: Nachrichten- und Marktumfeld zeigen derzeit außergewöhnlich hohes Risiko."
     if position.invested:

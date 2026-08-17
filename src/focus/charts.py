@@ -49,6 +49,9 @@ def day_signal_chart(
     data_is_resampled: bool = False,
     chart_style: str = "Kerzen",
     overlays: set[str] | None = None,
+    historical_forecasts: list[dict[str, object]] | None = None,
+    forecast_horizon_minutes: int = 60,
+    axis_ranges: dict[str, list[object]] | None = None,
 ) -> go.Figure:
     """Professioneller Kurschart mit Livekurs, Werkzeugen und erklärbaren Signalen."""
 
@@ -77,6 +80,7 @@ def day_signal_chart(
                 increasing_line_width=1.25,
                 decreasing_line_width=1.25,
                 whiskerwidth=0.65,
+                showlegend=False,
             )
         )
     else:
@@ -87,6 +91,7 @@ def day_signal_chart(
                 mode="lines",
                 name="Kurs",
                 line={"color": "#66d28a", "width": 2},
+                showlegend=False,
             )
         )
     if candle_minutes == 1:
@@ -98,6 +103,7 @@ def day_signal_chart(
                 name="Minutenverlauf",
                 line={"color": "rgba(148,163,184,.55)", "width": 1, "shape": "hv"},
                 hoverinfo="skip",
+                showlegend=False,
             )
         )
     if "EMA" in active_overlays:
@@ -128,6 +134,7 @@ def day_signal_chart(
             name="L&S Bid",
             marker={"size": 9, "color": signal.color, "line": {"width": 1.5, "color": "white"}},
             hovertemplate=f"L&S Bid {quote.bid:.3f} €<extra></extra>",
+            showlegend=False,
         )
     )
     figure.add_hrect(
@@ -159,7 +166,7 @@ def day_signal_chart(
                 x=forecast_x,
                 y=forecast_y,
                 mode="lines+markers+text",
-                name="Trendprognose",
+                name="Aktuelle Prognose",
                 text=[""] + [f"{item.minutes}m" for item in signal.trend_forecasts],
                 textposition="top center",
                 line={"color": "#38bdf8", "width": 1.5, "dash": "dot"},
@@ -174,6 +181,56 @@ def day_signal_chart(
                     "width": 3,
                 },
                 hovertemplate="Trend-Schätzung %{y:.3f} €<extra></extra>",
+            )
+        )
+    forecast_points = historical_forecasts or []
+    if "Prognose" in active_overlays and forecast_points:
+        target_times = [pd.Timestamp(item["target_at"]).tz_convert("Europe/Berlin") for item in forecast_points]
+        expected_prices = [float(item["expected_price"]) for item in forecast_points]
+        marker_colors = [
+            "#22c55e"
+            if item.get("direction_hit") is True
+            else "#ef4444"
+            if item.get("direction_hit") is False
+            else "#94a3b8"
+            for item in forecast_points
+        ]
+        hover_text = []
+        for item, target_at in zip(forecast_points, target_times, strict=True):
+            forecast_at = pd.Timestamp(item["forecast_at"]).tz_convert("Europe/Berlin")
+            observed = item.get("observed_price")
+            verdict = (
+                "Richtung getroffen"
+                if item.get("direction_hit") is True
+                else "Richtung verfehlt"
+                if item.get("direction_hit") is False
+                else "noch offen"
+            )
+            observed_text = f"{float(observed):.3f} €" if observed is not None else "noch offen"
+            hover_text.append(
+                f"Prognose von {forecast_at:%d.%m. %H:%M}<br>"
+                f"Zielzeit {target_at:%d.%m. %H:%M}<br>"
+                f"Erwartet {float(item['expected_price']):.3f} € "
+                f"({item['direction']})<br>"
+                f"Zone {float(item['expected_low']):.3f}–{float(item['expected_high']):.3f} €<br>"
+                f"Tatsächlich {observed_text}<br>{verdict}"
+            )
+        completed = [item for item in forecast_points if item.get("direction_hit") is not None]
+        hits = sum(item.get("direction_hit") is True for item in completed)
+        accuracy = hits / len(completed) * 100 if completed else None
+        comparison_name = f"Damals {forecast_horizon_minutes} Min"
+        if accuracy is not None:
+            comparison_name += f" · {hits}/{len(completed)} ({accuracy:.0f} %)"
+        figure.add_trace(
+            go.Scatter(
+                x=target_times,
+                y=expected_prices,
+                mode="lines+markers",
+                name=comparison_name,
+                line={"color": "rgba(167,139,250,.82)", "width": 1.7, "dash": "dash"},
+                marker={"size": 5, "color": marker_colors},
+                text=hover_text,
+                hovertemplate="%{text}<extra></extra>",
             )
         )
     if "Zonen" in active_overlays:
@@ -295,7 +352,7 @@ def day_signal_chart(
         align="left",
         showarrow=False,
         text=(
-            f"<b>{signal.headline}</b> · 5–30 Min {signal.forecast_direction} · "
+            f"<b>{signal.headline}</b> · 5–120 Min {signal.forecast_direction} · "
             f"{signal.score:.0f}/100"
         ),
         bgcolor="rgba(17,23,25,.86)",
@@ -333,6 +390,8 @@ def day_signal_chart(
     )
     xaxis: dict[str, object] = {
         "title": "",
+        "uirevision": f"dwave-x-{period_label}-{candle_minutes}-{chart_style}",
+        "autorange": True,
         "tickformat": (
             "%H:%M"
             if period_label == "Intraday"
@@ -353,29 +412,41 @@ def day_signal_chart(
             {"bounds": [23, 7.5], "pattern": "hour"},
             {"bounds": ["sat", "mon"]},
         ]
+    stored_ranges = axis_ranges or {}
+    if len(stored_ranges.get("x", [])) == 2:
+        xaxis["range"] = stored_ranges["x"]
+        xaxis["autorange"] = False
+    yaxis: dict[str, object] = {
+        "title": "",
+        "side": "right",
+        "uirevision": f"dwave-y-{period_label}-{candle_minutes}-{chart_style}",
+        "autorange": True,
+        "fixedrange": False,
+        "tickformat": ".3f",
+        "showgrid": True,
+        "gridcolor": "rgba(100,116,139,.20)",
+        "showspikes": True,
+        "spikemode": "across",
+        "spikesnap": "cursor",
+        "spikecolor": "rgba(226,232,240,.75)",
+        "spikethickness": 1,
+    }
+    if len(stored_ranges.get("y", [])) == 2:
+        yaxis["range"] = stored_ranges["y"]
+        yaxis["autorange"] = False
     figure.update_layout(
         height=525,
         margin={"l": 10, "r": 54, "t": 10, "b": 12},
         xaxis_rangeslider_visible=False,
         xaxis=xaxis,
-        yaxis={
-            "title": "",
-            "side": "right",
-            "fixedrange": False,
-            "tickformat": ".3f",
-            "showgrid": True,
-            "gridcolor": "rgba(100,116,139,.20)",
-            "showspikes": True,
-            "spikemode": "across",
-            "spikesnap": "cursor",
-            "spikecolor": "rgba(226,232,240,.75)",
-            "spikethickness": 1,
-        },
+        yaxis=yaxis,
         hovermode="x",
         hoverdistance=50,
         spikedistance=-1,
         hoverlabel={"bgcolor": "#1c2529", "font": {"color": "#f8fafc"}},
-        showlegend="EMA" in active_overlays,
+        showlegend="EMA" in active_overlays or (
+            "Prognose" in active_overlays and bool(forecast_points)
+        ),
         legend={"orientation": "h", "yanchor": "top", "y": 0.90, "x": 0.01},
         uirevision=f"dwave-professional-{period_label}-{candle_minutes}-{chart_style}",
         plot_bgcolor="#12191c",

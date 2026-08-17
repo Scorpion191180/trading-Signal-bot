@@ -89,6 +89,23 @@ def test_focus_forecast_is_deduplicated_and_only_resolved_with_future_prices(sto
         "market_regime": "Trend",
         "strategy_votes": ("Trend 70 ↑", "Momentum 65 ↑"),
         "spread_percent": 0.2,
+        "horizon_forecasts": tuple(
+            {
+                "minutes": minutes,
+                "direction": direction,
+                "expected_price": expected,
+                "expected_low": expected - 0.1,
+                "expected_high": expected + 0.1,
+                "confidence": 70.0,
+            }
+            for minutes, direction, expected in (
+                (5, "STEIGEND", 10.03),
+                (15, "STEIGEND", 10.10),
+                (30, "STEIGEND", 10.20),
+                (60, "FALLEND", 9.50),
+                (120, "SEITWÄRTS", 10.00),
+            )
+        ),
     }
     forecast, inserted = store.record_focus_forecast(**arguments)
     duplicate, duplicate_inserted = store.record_focus_forecast(
@@ -115,11 +132,13 @@ def test_focus_forecast_is_deduplicated_and_only_resolved_with_future_prices(sto
             (forecast_at + timedelta(minutes=5), 10.03),
             (forecast_at + timedelta(minutes=15), 10.10),
             (forecast_at + timedelta(minutes=30), 10.30),
+            (forecast_at + timedelta(minutes=60), 9.50),
+            (forecast_at + timedelta(minutes=120), 10.00),
         ],
         provider="Lang & Schwarz",
     )
 
-    assert resolved == 3
+    assert resolved == 5
     metrics = store.focus_forecast_metrics(symbol="RQ0", horizon_minutes=15)
     assert metrics["recorded"] == 1
     assert metrics["completed"] == 1
@@ -128,8 +147,13 @@ def test_focus_forecast_is_deduplicated_and_only_resolved_with_future_prices(sto
     assert metrics["average_return"] == pytest.approx(1.0)
     with store.sessions() as session:
         outcomes = list(session.scalars(select(FocusForecastOutcome)))
-    assert len(outcomes) == 3
-    assert outcomes[-1].zone_hit is False
+    assert len(outcomes) == 5
+    assert next(item for item in outcomes if item.horizon_minutes == 30).zone_hit is False
+    sixty_minute = store.focus_forecast_chart_points(symbol="RQ0", horizon_minutes=60)
+    assert len(sixty_minute) == 1
+    assert sixty_minute[0]["expected_price"] == 9.5
+    assert sixty_minute[0]["observed_price"] == 9.5
+    assert sixty_minute[0]["direction_hit"] is True
 
 
 def test_focus_forecast_metrics_keep_strategy_versions_separate(store):

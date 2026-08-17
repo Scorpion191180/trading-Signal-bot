@@ -247,7 +247,7 @@ def test_short_term_confirmation_creates_buy_and_profitable_add_signal():
     assert buy.forecast_direction == "EHER STEIGEND"
     assert buy.forecast_low < buy.current_price < buy.forecast_high
     assert len(buy.strategy_votes) == 7
-    assert [item.minutes for item in buy.trend_forecasts] == [5, 15, 30]
+    assert [item.minutes for item in buy.trend_forecasts] == [5, 15, 30, 60, 120]
     assert all(item.expected_low < item.expected_price < item.expected_high for item in buy.trend_forecasts)
     assert any("OTT/UT" in vote for vote in buy.strategy_votes)
 

@@ -12,6 +12,7 @@ from .models import Base
 SQLITE_COMPATIBILITY_COLUMNS = {
     "focus_forecasts": {
         "model_version": "VARCHAR(30) NOT NULL DEFAULT 'focus-market-v1'",
+        "horizons_json": "TEXT NOT NULL DEFAULT ''",
     },
     "virtual_positions": {
         "entry_provider": "VARCHAR(80) NOT NULL DEFAULT 'unbekannt'",

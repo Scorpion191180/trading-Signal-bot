@@ -46,6 +46,75 @@ from .replay import replay_focus_day
 from .stock3 import Stock3LangSchwarzProvider
 
 COMPACT_PERIOD_OPTIONS = ("Intraday", "1W", "1M", "3M", "1J", "Max")
+UI_REFRESH_SECONDS = 1
+
+_ZOOM_TRACKER_JS = """
+export default function(component) {
+    const {data, setStateValue} = component;
+    let activePlot = null;
+    let resetButtons = [];
+    let ranges = data.ranges || {};
+
+    const clearRanges = () => {
+        ranges = {};
+        setStateValue('ranges', null);
+    };
+
+    const saveRanges = (event) => {
+        const next = {...ranges};
+        const xReset = event['xaxis.autorange'] === true;
+        const yReset = event['yaxis.autorange'] === true;
+        if (xReset) delete next.x;
+        if (yReset) delete next.y;
+        if (event['xaxis.range[0]'] !== undefined && event['xaxis.range[1]'] !== undefined) {
+            next.x = [event['xaxis.range[0]'], event['xaxis.range[1]']];
+        }
+        if (event['yaxis.range[0]'] !== undefined && event['yaxis.range[1]'] !== undefined) {
+            next.y = [event['yaxis.range[0]'], event['yaxis.range[1]']];
+        }
+        ranges = next;
+        setStateValue('ranges', Object.keys(next).length ? next : null);
+    };
+
+    const attach = () => {
+        const wrapper = document.querySelector(`.st-key-${CSS.escape(data.chartKey)}`);
+        const plot = wrapper?.querySelector('.js-plotly-plot');
+        if (!plot) return;
+        if (plot !== activePlot && typeof plot.on === 'function') {
+            if (activePlot && typeof activePlot.removeListener === 'function') {
+                activePlot.removeListener('plotly_relayout', saveRanges);
+            }
+            plot.on('plotly_relayout', saveRanges);
+            activePlot = plot;
+        }
+        const nextResetButtons = Array.from(
+            wrapper.querySelectorAll('[data-title="Reset axes"], [data-title="Autoscale"]')
+        );
+        if (nextResetButtons.some((button, index) => button !== resetButtons[index])) {
+            resetButtons.forEach((button) => button.removeEventListener('click', clearRanges, true));
+            resetButtons = nextResetButtons;
+            resetButtons.forEach((button) => button.addEventListener('click', clearRanges, true));
+        }
+    };
+
+    attach();
+    const observer = new MutationObserver(attach);
+    observer.observe(document.body, {childList: true, subtree: true});
+    return () => {
+        observer.disconnect();
+        if (activePlot && typeof activePlot.removeListener === 'function') {
+            activePlot.removeListener('plotly_relayout', saveRanges);
+        }
+        resetButtons.forEach((button) => button.removeEventListener('click', clearRanges, true));
+    };
+}
+"""
+_ZOOM_TRACKER = st.components.v2.component(
+    "focus_chart_zoom_tracker",
+    html="<span></span>",
+    css=":host { display: none !important; }",
+    js=_ZOOM_TRACKER_JS,
+)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -56,7 +125,7 @@ def _cached_context_data() -> tuple[dict[str, pd.DataFrame], dict[str, str], str
     return bundle.frames, bundle.errors, bundle.provider, bundle.symbol, bundle.venue
 
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=1, show_spinner=False)
 def _cached_lang_schwarz_snapshot() -> tuple[dict[str, object], pd.DataFrame]:
     """Vermeidet Dataclass-Objekte im Streamlit-Cache über Code-Reloads hinweg."""
 
@@ -64,7 +133,7 @@ def _cached_lang_schwarz_snapshot() -> tuple[dict[str, object], pd.DataFrame]:
     return asdict(snapshot.quote), snapshot.trades
 
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=1, show_spinner=False)
 def _cached_stock3_quote() -> dict[str, object]:
     """Liefert den L&S-Bid-Kurs des frei sichtbaren stock3-D-Wave-Charts."""
 
@@ -76,9 +145,14 @@ def _cached_stock3_history(resolution_seconds: int) -> pd.DataFrame:
     return Stock3LangSchwarzProvider().history(resolution_seconds)
 
 
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_stock3_minute_history() -> pd.DataFrame:
+    return Stock3LangSchwarzProvider().history(60)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_today_replay() -> dict[str, object]:
-    """Berechnet den v5-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
+    """Berechnet den v6-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
 
     provider = Stock3LangSchwarzProvider()
     result = replay_focus_day(
@@ -155,15 +229,41 @@ def _latest_trading_day(frame: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
     return selected
 
 
+def _apply_live_quote(candles: pd.DataFrame, quote: LiveQuote) -> pd.DataFrame:
+    """Aktualisiert die laufende Minutenkerze bei jedem Sekunden-Refresh mit dem echten Bid."""
+
+    if candles.empty:
+        return candles
+    updated = candles.copy()
+    quote_time = pd.Timestamp(quote.quoted_at or quote.fetched_at).floor("min")
+    quote_time = quote_time.tz_localize("UTC") if quote_time.tzinfo is None else quote_time.tz_convert("UTC")
+    if quote_time not in updated.index:
+        previous_close = float(updated["close"].iloc[-1])
+        updated.loc[quote_time, ["open", "high", "low", "close", "volume"]] = [
+            previous_close,
+            max(previous_close, quote.bid),
+            min(previous_close, quote.bid),
+            quote.bid,
+            0.0,
+        ]
+    else:
+        updated.loc[quote_time, "high"] = max(float(updated.loc[quote_time, "high"]), quote.bid)
+        updated.loc[quote_time, "low"] = min(float(updated.loc[quote_time, "low"]), quote.bid)
+        updated.loc[quote_time, "close"] = quote.bid
+    updated = updated.sort_index()
+    updated.attrs.update(candles.attrs)
+    return updated
+
+
 def _live_market_data() -> tuple[LiveQuote, pd.DataFrame, bool, str]:
     """Verwendet L&S-Bid primär und fällt gestuft auf Abschlussquellen zurück."""
 
     try:
         quote = LiveQuote(**_cached_stock3_quote())
-        candles = _latest_trading_day(_cached_stock3_history(60), quote)
+        candles = _latest_trading_day(_cached_stock3_minute_history(), quote)
         if len(candles) < 30:
             raise ProviderError("Die öffentliche L&S-Bid-Historie enthält zu wenige Tageskerzen.")
-        return quote, candles, False, "stock3 · L&S Bid"
+        return quote, _apply_live_quote(candles, quote), False, "stock3 · L&S Bid"
     except ProviderError as stock3_error:
         stock3_error_message = str(stock3_error)
 
@@ -712,7 +812,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
         ):
             note += " · 17:55-Musterkerze als Live-Bestätigungsproxy"
     st.markdown(
-        '<div class="replay-summary-bar"><label>TAGES-REPLAY V5</label>'
+        '<div class="replay-summary-bar"><label>TAGES-REPLAY V6</label>'
         f'<b>{first_at:%H:%M}–{last_at:%H:%M}</b>'
         f'<strong style="color:{color}">{pnl:+.2f} € ({float(summary["pnl_percent"]):+.2f} %)</strong>'
         f'<span>Depot {float(summary["ending_equity"]):.2f} €</span>'
@@ -723,12 +823,12 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
     )
 
 
-@st.fragment(run_every=10)
+@st.fragment(run_every=UI_REFRESH_SECONDS)
 def _automatic_day_chart(store: DataStore) -> None:
     try:
         quote, candles, _fallback_active, _source_name = _live_market_data()
     except ProviderError:
-        st.error("Der Live-Tageschart ist gerade nicht erreichbar. Die App versucht es in zehn Sekunden erneut.")
+        st.error("Der Live-Tageschart ist gerade nicht erreichbar. Die App versucht es in einer Sekunde erneut.")
         return
 
     frames_data, errors, provider, symbol, venue = _cached_context_data()
@@ -826,6 +926,14 @@ def _automatic_day_chart(store: DataStore) -> None:
                     key="dwave_chart_overlays",
                     width="stretch",
                 )
+                forecast_horizon = st.select_slider(
+                    "Vergleich früherer Prognosen",
+                    options=(15, 30, 60, 120),
+                    value=60,
+                    format_func=lambda value: f"{value} Minuten",
+                    key="dwave_forecast_horizon",
+                    help="Die violette Linie zeigt, welchen Kurs der Bot damals für diese spätere Zielzeit erwartet hatte.",
+                )
     selected_minutes = int(candle_minutes or DEFAULT_INTERVAL[period_label])
     try:
         display_candles = select_display_candles(
@@ -840,6 +948,24 @@ def _automatic_day_chart(store: DataStore) -> None:
         selected_minutes = 5
         display_candles = resample_intraday_candles(candles, 5)
 
+    historical_forecasts = store.focus_forecast_chart_points(
+        symbol=DWAVE_INSTRUMENT.exchange_symbol,
+        horizon_minutes=int(forecast_horizon),
+        start_at=pd.Timestamp(display_candles.index[0]).to_pydatetime(),
+        end_at=pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
+    )
+
+    chart_key = f"dwave_professional_chart_{period_label}_{selected_minutes}_{chart_style}"
+    zoom_key = f"{chart_key}_zoom"
+    stored_zoom = st.session_state.get(zoom_key, {}).get("ranges")
+    zoom_state = _ZOOM_TRACKER(
+        key=zoom_key,
+        data={"chartKey": chart_key, "ranges": stored_zoom},
+        default={"ranges": stored_zoom},
+        on_ranges_change=lambda: None,
+        width="content",
+    )
+    axis_ranges = zoom_state.ranges if isinstance(zoom_state.ranges, dict) else None
     figure = day_signal_chart(
         display_candles,
         quote,
@@ -851,6 +977,9 @@ def _automatic_day_chart(store: DataStore) -> None:
         data_is_resampled=True,
         chart_style=str(chart_style or "Kerzen"),
         overlays=set(overlays or ()),
+        historical_forecasts=historical_forecasts,
+        forecast_horizon_minutes=int(forecast_horizon),
+        axis_ranges=axis_ranges,
     )
     st.plotly_chart(
         figure,
@@ -869,7 +998,7 @@ def _automatic_day_chart(store: DataStore) -> None:
             ],
             "toImageButtonOptions": {"format": "png", "filename": "D-Wave-Chart", "scale": 2},
         },
-        key=f"dwave_professional_chart_{period_label}_{selected_minutes}_{chart_style}",
+        key=chart_key,
     )
 
 

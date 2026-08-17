@@ -36,7 +36,7 @@ from .models import (
     WeightVersion,
 )
 
-FOCUS_FORECAST_HORIZONS = (5, 15, 30)
+FOCUS_FORECAST_HORIZONS = (5, 15, 30, 60, 120)
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -612,6 +612,7 @@ class DataStore:
         market_regime: str,
         strategy_votes: tuple[str, ...],
         spread_percent: float,
+        horizon_forecasts: tuple[dict[str, object], ...] = (),
         model_version: str = "focus-market-v1",
     ) -> tuple[FocusForecast, bool]:
         """Speichert höchstens eine unveränderliche Prognose pro Fünf-Minuten-Block."""
@@ -638,6 +639,7 @@ class DataStore:
                 forecast_high=forecast_high,
                 market_regime=market_regime,
                 strategy_votes="\n".join(strategy_votes),
+                horizons_json=json.dumps(horizon_forecasts, ensure_ascii=False, sort_keys=True),
                 spread_percent=spread_percent,
             )
             session.add(record)
@@ -662,7 +664,8 @@ class DataStore:
         with self.sessions.begin() as session:
             forecast_query = select(FocusForecast).where(
                 FocusForecast.symbol == symbol.upper().strip(),
-                FocusForecast.forecast_at >= first_time - timedelta(minutes=30),
+                FocusForecast.forecast_at
+                >= first_time - timedelta(minutes=max(FOCUS_FORECAST_HORIZONS)),
                 FocusForecast.forecast_at <= last_time - timedelta(minutes=5),
             )
             if provider is not None:
@@ -680,6 +683,14 @@ class DataStore:
             )
             for forecast in forecasts:
                 forecast_at = _aware_utc(forecast.forecast_at)
+                try:
+                    horizon_values = {
+                        int(item["minutes"]): item
+                        for item in json.loads(forecast.horizons_json or "[]")
+                        if isinstance(item, dict) and "minutes" in item
+                    }
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    horizon_values = {}
                 for horizon in FOCUS_FORECAST_HORIZONS:
                     if (forecast.id, horizon) in existing:
                         continue
@@ -690,14 +701,17 @@ class DataStore:
                     observed_at, observed_price = ordered[position]
                     if observed_at > target + timedelta(minutes=2):
                         continue
+                    horizon_value = horizon_values.get(horizon, {})
+                    direction = str(horizon_value.get("direction", forecast.direction)).upper()
+                    expected_low = float(horizon_value.get("expected_low", forecast.forecast_low))
+                    expected_high = float(horizon_value.get("expected_high", forecast.forecast_high))
                     return_percent = (observed_price / forecast.entry_price - 1) * 100
-                    cost_hurdle = max(forecast.spread_percent, 0.0)
-                    if forecast.direction == "EHER STEIGEND":
-                        direction_hit = return_percent > cost_hurdle
-                    elif forecast.direction == "EHER FALLEND":
-                        direction_hit = return_percent < -cost_hurdle
+                    if "STEIGEND" in direction:
+                        direction_hit = return_percent > 0
+                    elif "FALLEND" in direction:
+                        direction_hit = return_percent < 0
                     else:
-                        direction_hit = abs(return_percent) <= max(cost_hurdle, 0.15)
+                        direction_hit = abs(return_percent) <= 0.15
                     session.add(
                         FocusForecastOutcome(
                             forecast_id=forecast.id,
@@ -706,7 +720,7 @@ class DataStore:
                             observed_price=observed_price,
                             return_percent=return_percent,
                             direction_hit=direction_hit,
-                            zone_hit=forecast.forecast_low <= observed_price <= forecast.forecast_high,
+                            zone_hit=expected_low <= observed_price <= expected_high,
                         )
                     )
                     resolved += 1
@@ -770,6 +784,85 @@ class DataStore:
                     .limit(limit)
                 )
             )
+
+    def focus_forecast_chart_points(
+        self,
+        *,
+        symbol: str = "RQ0",
+        horizon_minutes: int = 30,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, object]]:
+        """Liefert frühere Horizont-Prognosen an ihrer damaligen Zielzeit für den Chart."""
+
+        if horizon_minutes not in FOCUS_FORECAST_HORIZONS:
+            raise ValueError("Dieser Prognosehorizont wird nicht unterstützt.")
+        normalized = symbol.upper().strip()
+        with self.sessions() as session:
+            query = select(FocusForecast).where(FocusForecast.symbol == normalized)
+            if start_at is not None:
+                query = query.where(
+                    FocusForecast.forecast_at
+                    >= _aware_utc(start_at) - timedelta(minutes=horizon_minutes)
+                )
+            if end_at is not None:
+                query = query.where(FocusForecast.forecast_at <= _aware_utc(end_at))
+            forecasts = list(
+                session.scalars(query.order_by(FocusForecast.forecast_at.desc()).limit(limit))
+            )
+            forecast_ids = [forecast.id for forecast in forecasts]
+            outcomes = (
+                {
+                    outcome.forecast_id: outcome
+                    for outcome in session.scalars(
+                        select(FocusForecastOutcome).where(
+                            FocusForecastOutcome.forecast_id.in_(forecast_ids),
+                            FocusForecastOutcome.horizon_minutes == horizon_minutes,
+                        )
+                    )
+                }
+                if forecast_ids
+                else {}
+            )
+
+        points: list[dict[str, object]] = []
+        for forecast in reversed(forecasts):
+            try:
+                horizons = json.loads(forecast.horizons_json or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            horizon = next(
+                (
+                    item
+                    for item in horizons
+                    if isinstance(item, dict) and int(item.get("minutes", 0)) == horizon_minutes
+                ),
+                None,
+            )
+            if horizon is None:
+                continue
+            forecast_at = _aware_utc(forecast.forecast_at)
+            outcome = outcomes.get(forecast.id)
+            points.append(
+                {
+                    "forecast_at": forecast_at,
+                    "target_at": forecast_at + timedelta(minutes=horizon_minutes),
+                    "entry_price": float(forecast.entry_price),
+                    "expected_price": float(horizon["expected_price"]),
+                    "expected_low": float(horizon["expected_low"]),
+                    "expected_high": float(horizon["expected_high"]),
+                    "direction": str(horizon["direction"]),
+                    "confidence": float(horizon["confidence"]),
+                    "observed_at": _aware_utc(outcome.observed_at) if outcome else None,
+                    "observed_price": float(outcome.observed_price) if outcome else None,
+                    "direction_hit": bool(outcome.direction_hit) if outcome else None,
+                    "zone_hit": bool(outcome.zone_hit) if outcome else None,
+                    "model_version": forecast.model_version,
+                    "provider": forecast.provider,
+                }
+            )
+        return points
 
     def update_focus_bot_status(
         self,

@@ -188,6 +188,7 @@ class FocusForecast(Base):
     forecast_high: Mapped[float] = mapped_column(Float)
     market_regime: Mapped[str] = mapped_column(String(40))
     strategy_votes: Mapped[str] = mapped_column(Text, default="")
+    horizons_json: Mapped[str] = mapped_column(Text, default="")
     spread_percent: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
