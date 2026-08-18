@@ -302,6 +302,19 @@ def _cached_comparison_history(
     return Stock3LangSchwarzProvider(instrument=instrument).history(resolution_seconds)
 
 
+@st.cache_data(ttl=3_600, show_spinner=False)
+def _cached_comparison_ask_minutes(
+    name: str,
+    instrument_id: int,
+    isin: str,
+    cache_prefix: str,
+) -> pd.DataFrame:
+    """Hält echte historische L&S-Briefkurse für nachvollziehbare Replays lokal vor."""
+
+    instrument = _stock3_instrument(name, instrument_id, isin, cache_prefix)
+    return Stock3LangSchwarzProvider(instrument=instrument).history(60, quote_type="ask")
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_today_replay() -> dict[str, object]:
     """Berechnet den aktuellen Tages-Replay nur auf ausdrücklichen Klick und cached ihn."""
@@ -478,6 +491,11 @@ def _comparison_market_signal(
         _latest_trading_day(_cached_comparison_minutes(*arguments), quote),
         quote,
     )
+    try:
+        _cached_comparison_ask_minutes(*arguments)
+    except ProviderError:
+        # Der Live-Chart bleibt auch bei einer vorübergehend fehlenden ASK-Historie nutzbar.
+        pass
     if len(minutes) < 30:
         raise ProviderError(f"Für {instrument.name} liegen zu wenige L&S-Minutenkerzen vor.")
     five_minutes = _cached_comparison_history(*arguments, 300)
@@ -556,13 +574,23 @@ def _render_comparison_charts(
             if accuracy is not None
             else "Live-Messung startet mit dem nächsten aktiven Bot-Zyklus"
         )
-        historical_forecasts = store.focus_forecast_chart_points(
-            symbol=instrument.isin,
-            horizon_minutes=forecast_horizon,
-            start_at=pd.Timestamp(display_candles.index[0]).to_pydatetime(),
-            end_at=pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
-            model_version=PAPER_STRATEGY_VERSION,
-        )
+        forecast_arguments = {
+            "symbol": instrument.isin,
+            "horizon_minutes": forecast_horizon,
+            "start_at": pd.Timestamp(display_candles.index[0]).to_pydatetime(),
+            "end_at": pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
+        }
+        historical_forecasts = [
+            *store.focus_forecast_chart_points(
+                **forecast_arguments,
+                model_version=f"{PAPER_STRATEGY_VERSION}-replay",
+            ),
+            *store.focus_forecast_chart_points(
+                **forecast_arguments,
+                model_version=PAPER_STRATEGY_VERSION,
+            ),
+        ]
+        historical_forecasts.sort(key=lambda item: pd.Timestamp(item["target_at"]))
         st.markdown(
             '<div class="comparison-header">'
             f'<b>{escape(instrument.name)}</b><span>Lang &amp; Schwarz</span>'

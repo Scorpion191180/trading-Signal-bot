@@ -10,6 +10,7 @@ from src.focus.analysis import (
     MICROTREND_CONTINUATION_EVENT,
     US_OPENING_REVERSAL_EVENT,
     IntradaySignal,
+    TrendForecast,
 )
 from src.focus.replay import replay_focus_day
 
@@ -139,3 +140,38 @@ def test_replay_accepts_completed_microtrend_pattern_as_confirmation(monkeypatch
 
     assert result.completed_trades == 1
     assert "bullischer Mikrotrend" in result.orders[0].reason
+
+
+def test_replay_saves_forecasts_under_the_selected_asset_symbol(store, monkeypatch):
+    bid = _candles()
+    ask = bid.copy()
+    for column in ("open", "high", "low", "close"):
+        ask[column] += 0.02
+    signal = replace(
+        _buy_signal(),
+        forecast_direction="STEIGEND",
+        forecast_low=9.9,
+        forecast_high=10.7,
+        trend_forecasts=(TrendForecast(5, "STEIGEND", 10.6, 10.3, 10.8, 60.0),),
+    )
+    monkeypatch.setattr("src.focus.replay.analyze_timeframes", lambda _frames: ({}, {}, {}))
+    monkeypatch.setattr(
+        "src.focus.replay.build_market_signal",
+        lambda *_args, **_kwargs: signal,
+    )
+
+    replay_focus_day(
+        bid_minutes=bid,
+        ask_minutes=ask,
+        five_minutes=bid,
+        hourly=bid,
+        daily=bid,
+        forecast_store=store,
+        forecast_symbol="US84615Q1031",
+        forecast_isin="US84615Q1031",
+    )
+
+    saved = store.list_focus_forecasts(symbol="US84615Q1031")
+    assert saved
+    assert all(item.symbol == "US84615Q1031" for item in saved)
+    assert store.list_focus_forecasts(symbol="RQ0") == []

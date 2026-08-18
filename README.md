@@ -125,6 +125,14 @@ Web-App und unabhängigen Papier-Bot einmalig als macOS-LaunchAgents installiere
 
 Beide Dienste starten sofort und danach automatisch bei jeder macOS-Anmeldung. macOS startet sie nach einem Absturz erneut; die Web-App prüft außerdem ihre lokale Gesundheitsadresse und ersetzt einen nicht mehr antwortenden Streamlit-Prozess. Das Installationsskript muss nur einmal in einem normalen macOS-Terminal gestartet werden. Der Bot-Heartbeat steht direkt in der Kontozeile der App. Der Mac muss eingeschaltet, angemeldet, wach und mit dem Internet verbunden sein; während Ruhezustand oder Ausschalten kann der lokale Dienst keine neuen Signale verarbeiten. Protokolle liegen unter `data/web-app.log`, `data/web-app.error.log`, `data/dwave-paper-bot.log` und `data/dwave-paper-bot.error.log`.
 
+Historische Prognosepunkte für den jüngsten Handelstag lassen sich für alle angezeigten Aktien idempotent neu berechnen:
+
+```bash
+.venv/bin/python -m scripts.replay_focus_day --all-instruments --save-forecasts
+```
+
+Der Replay schreibt ausschließlich als `v9-replay` gekennzeichnete Prognosen und Trefferbewertungen. Rückblickend erkannte Käufe oder Verkäufe bleiben in einem temporären Testdepot und werden niemals als echte Papierorders in das laufende Journal übernommen.
+
 ## Tests
 
 ```bash

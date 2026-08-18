@@ -1,4 +1,4 @@
-"""Zeitlich sauberer Tages-Replay der D-Wave-Papierstrategie."""
+"""Zeitlich sauberer Tages-Replay der Mehraktien-Papierstrategie."""
 
 from __future__ import annotations
 
@@ -141,6 +141,9 @@ def replay_focus_day(
     confirmation_observations: int = 2,
     forecast_store: DataStore | None = None,
     forecast_model_version: str = "focus-market-v9-replay",
+    forecast_symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
+    forecast_isin: str = DWAVE_INSTRUMENT.isin,
+    allow_neutral_context: bool = False,
 ) -> FocusReplayResult:
     """Spielt die aktuelle Strategie Minute fuer Minute ohne spaetere Kerzen durch."""
 
@@ -153,7 +156,11 @@ def replay_focus_day(
     engine = create_database("sqlite:///:memory:")
     settings = AppSettings(database_url="sqlite:///:memory:")
     store = DataStore(create_session_factory(engine), settings)
-    account = current_paper_account(store, float(bid_day["close"].iloc[0]))
+    account = current_paper_account(
+        store,
+        float(bid_day["close"].iloc[0]),
+        symbol=forecast_symbol,
+    )
     confirmation_bucket: pd.Timestamp | None = None
     confirmation_cycles = 0
     evaluated = skipped = buy_signals = sell_signals = 0
@@ -176,7 +183,11 @@ def replay_focus_day(
                 daily,
                 signal_at,
             )
-            analyses, enriched, errors = analyze_timeframes(frames)
+            analyses, enriched, errors = (
+                analyze_timeframes(frames, allow_neutral_long_term_context=True)
+                if allow_neutral_context
+                else analyze_timeframes(frames)
+            )
             if errors:
                 skipped += 1
                 continue
@@ -194,7 +205,7 @@ def replay_focus_day(
             quote = LiveQuote(
                 provider="stock3 historischer L&S-Geld-/Briefkurs",
                 venue="Lang & Schwarz",
-                isin=DWAVE_INSTRUMENT.isin,
+                isin=forecast_isin,
                 bid=execution_bid,
                 ask=execution_bid + spread,
                 bid_size=None,
@@ -221,14 +232,18 @@ def replay_focus_day(
             )
             if forecast_store is not None and signal.trend_forecasts:
                 forecast_store.evaluate_focus_forecasts(
-                    DWAVE_INSTRUMENT.exchange_symbol,
+                    forecast_symbol,
                     [(signal_at, close_bid)],
                     provider=forecast_provider,
                 )
                 base_version = forecast_model_version.removesuffix("-replay")
-                quality = forecast_quality_map(forecast_store, base_version)
+                quality = forecast_quality_map(
+                    forecast_store,
+                    base_version,
+                    symbol=forecast_symbol,
+                )
                 _forecast, inserted = forecast_store.record_focus_forecast(
-                    symbol=DWAVE_INSTRUMENT.exchange_symbol,
+                    symbol=forecast_symbol,
                     provider=forecast_provider,
                     forecast_at=signal_at,
                     entry_price=close_bid,
@@ -270,6 +285,7 @@ def replay_focus_day(
                 signal,
                 signal_at=signal_at,
                 entry_confirmed=confirmation_cycles >= required_confirmations,
+                symbol=forecast_symbol,
             )
             if signal.action == "BUY" and not had_position and account.quantity <= 0:
                 rejected_entries[account.state] += 1
@@ -279,7 +295,7 @@ def replay_focus_day(
 
         if forecast_store is not None:
             evaluated_forecasts = forecast_store.evaluate_focus_forecasts(
-                DWAVE_INSTRUMENT.exchange_symbol,
+                forecast_symbol,
                 [
                     ((timestamp + timedelta(minutes=1)).to_pydatetime(), float(price))
                     for timestamp, price in bid_day["close"].items()
@@ -288,7 +304,7 @@ def replay_focus_day(
             )
 
         final_bid = float(bid_day["close"].iloc[-1])
-        account = current_paper_account(store, final_bid)
+        account = current_paper_account(store, final_bid, symbol=forecast_symbol)
         trades = store.list_trades(account.portfolio_id)
         raw_orders = sorted(store.list_orders(account.portfolio_id, limit=1_000), key=lambda row: row.executed_at)
         orders = tuple(
