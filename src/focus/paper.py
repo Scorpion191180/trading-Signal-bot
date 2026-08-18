@@ -1,4 +1,4 @@
-"""Eigenständiges 2.000-Euro-Papierkonto für das D-Wave-Marktsignal."""
+"""Eigenständiges 2.000-Euro-Papierkonto für mehrere L&S-Marktsignale."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ PAPER_STARTING_CAPITAL = 2_000.0
 TRADE_REPUBLIC_ORDER_FEE = 1.0
 PAPER_SLIPPAGE_PCT = 0.0005
 PAPER_MAX_SPREAD_PERCENT = 0.6
-PAPER_STRATEGY_VERSION = "focus-market-v8"
+PAPER_STRATEGY_VERSION = "focus-market-v9"
 PAPER_MAX_CAPITAL_FRACTION = 0.50
 PAPER_RISK_PER_TRADE = 0.0075
 PAPER_MIN_NET_EDGE_PCT = 0.002
@@ -59,23 +59,28 @@ class PaperAccount:
     total_slippage_cost: float
     total_transaction_costs: float
     completed_trades: int
+    open_positions: int
 
 
 def _portfolio(store: DataStore) -> VirtualPortfolio:
     return store.get_or_create_virtual_portfolio(
         name=PAPER_PORTFOLIO_NAME,
-        strategy="D-Wave Kurzfrist-Marktsignal",
+        strategy="Multi-Aktien Kurzfrist-Marktsignal",
         strategy_version=PAPER_STRATEGY_VERSION,
         initial_capital=PAPER_STARTING_CAPITAL,
     )
 
 
-def _position(store: DataStore, portfolio_id: int) -> VirtualPosition | None:
+def _position(
+    store: DataStore,
+    portfolio_id: int,
+    symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
+) -> VirtualPosition | None:
     return next(
         (
             item
             for item in store.list_positions(portfolio_id)
-            if item.symbol == DWAVE_INSTRUMENT.exchange_symbol
+            if item.symbol == symbol.upper().strip()
         ),
         None,
     )
@@ -109,6 +114,7 @@ def _entry_plan(
     portfolio: VirtualPortfolio,
     quote: LiveQuote,
     signal: IntradaySignal,
+    equity: float,
 ) -> tuple[float, float, float] | str:
     """Prueft erst die Nettorendite und bestimmt dann eine risikobegrenzte Stueckzahl."""
 
@@ -123,7 +129,6 @@ def _entry_plan(
     if reward_per_share <= 0 or risk_per_share <= 0:
         return "WARTET · KOSTEN"
 
-    equity = portfolio.cash
     capital_limit = min(portfolio.cash, equity * PAPER_MAX_CAPITAL_FRACTION)
     affordable_quantity = max((capital_limit - fee) / entry_execution, 0.0)
     loss_budget = max(equity * PAPER_RISK_PER_TRADE - 2 * fee, 0.0)
@@ -151,11 +156,19 @@ def _today_trades(store: DataStore, portfolio_id: int, signal_at: datetime) -> l
     return result
 
 
-def _entry_guard(store: DataStore, portfolio: VirtualPortfolio, signal_at: datetime) -> str | None:
-    trades = _today_trades(store, portfolio.id, signal_at)
+def _entry_guard(
+    store: DataStore,
+    portfolio: VirtualPortfolio,
+    signal_at: datetime,
+    symbol: str,
+) -> str | None:
+    all_trades = _today_trades(store, portfolio.id, signal_at)
+    trades = [trade for trade in all_trades if trade.symbol == symbol.upper().strip()]
     if len(trades) >= PAPER_MAX_TRADES_PER_DAY:
         return "WARTET · TAGESLIMIT"
-    if sum(float(trade.pnl_eur) for trade in trades) <= -portfolio.initial_capital * PAPER_DAILY_LOSS_LIMIT:
+    if sum(float(trade.pnl_eur) for trade in all_trades) <= (
+        -portfolio.initial_capital * PAPER_DAILY_LOSS_LIMIT
+    ):
         return "WARTET · VERLUSTLIMIT"
 
     consecutive_losses = 0
@@ -197,11 +210,13 @@ def run_paper_account(
     *,
     signal_at: datetime,
     entry_confirmed: bool = True,
+    symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
 ) -> PaperAccount:
-    """Bucht nur neue Vorwärtssignale; vorhandene Chartgeschichte wird nie nachträglich gehandelt."""
+    """Bucht ein Vorwärtssignal für genau eine Aktie im gemeinsamen Papierdepot."""
 
     portfolio = _portfolio(store)
-    position = _position(store, portfolio.id)
+    normalized_symbol = symbol.upper().strip()
+    position = _position(store, portfolio.id, normalized_symbol)
     provider = f"{quote.venue} · {quote.provider} · Trade-Republic-Kostenmodell"
     fee, spread_pct, slippage_pct = _execution_costs(quote)
     execution_allowed = signal.market_open and signal.data_age_minutes <= 4
@@ -209,12 +224,12 @@ def run_paper_account(
     if position is not None:
         store.update_market_price(
             portfolio.id,
-            DWAVE_INSTRUMENT.exchange_symbol,
+            normalized_symbol,
             quote.bid,
             provider=provider,
             is_demo=False,
         )
-        position = _position(store, portfolio.id)
+        position = _position(store, portfolio.id, normalized_symbol)
 
     try:
         if (
@@ -228,8 +243,16 @@ def run_paper_account(
             if not entry_confirmed:
                 waiting_state = "WARTET · BESTÄTIGUNG"
             else:
-                waiting_state = _entry_guard(store, portfolio, signal_at)
-            plan = _entry_plan(portfolio, quote, signal) if waiting_state is None else waiting_state
+                waiting_state = _entry_guard(store, portfolio, signal_at, normalized_symbol)
+            equity = portfolio.cash + sum(
+                item.quantity * item.current_price
+                for item in store.list_positions(portfolio.id)
+            )
+            plan = (
+                _entry_plan(portfolio, quote, signal, equity)
+                if waiting_state is None
+                else waiting_state
+            )
             if isinstance(plan, str):
                 waiting_state = plan
             else:
@@ -243,7 +266,7 @@ def run_paper_account(
                 )
                 store.open_position(
                     portfolio_id=portfolio.id,
-                    symbol=DWAVE_INSTRUMENT.exchange_symbol,
+                    symbol=normalized_symbol,
                     quantity=quantity,
                     market_price=quote.midpoint,
                     stop_loss=stop_loss,
@@ -253,7 +276,9 @@ def run_paper_account(
                     weight_version=PAPER_STRATEGY_VERSION,
                     provider=provider,
                     is_demo=False,
-                    idempotency_key=f"focus:{portfolio.id}:BUY:{_bucket(signal_at)}",
+                    idempotency_key=(
+                        f"focus:{portfolio.id}:{normalized_symbol}:BUY:{_bucket(signal_at)}"
+                    ),
                     fee=fee,
                     spread_pct=spread_pct,
                     slippage_pct=slippage_pct,
@@ -261,7 +286,7 @@ def run_paper_account(
                 )
                 store.update_market_price(
                     portfolio.id,
-                    DWAVE_INSTRUMENT.exchange_symbol,
+                    normalized_symbol,
                     quote.bid,
                     provider=provider,
                     is_demo=False,
@@ -301,13 +326,15 @@ def run_paper_account(
             if exit_reason:
                 store.close_position(
                     portfolio_id=portfolio.id,
-                    symbol=DWAVE_INSTRUMENT.exchange_symbol,
+                    symbol=normalized_symbol,
                     market_price=quote.midpoint,
                     reason=exit_reason,
                     signal_score=signal.score,
                     provider=provider,
                     is_demo=False,
-                    idempotency_key=f"focus:{portfolio.id}:SELL:{_bucket(signal_at)}",
+                    idempotency_key=(
+                        f"focus:{portfolio.id}:{normalized_symbol}:SELL:{_bucket(signal_at)}"
+                    ),
                     fee=fee,
                     spread_pct=spread_pct,
                     slippage_pct=slippage_pct,
@@ -315,7 +342,7 @@ def run_paper_account(
                 )
     except (DuplicateOrderError, PortfolioError):
         pass
-    account = paper_account(store, portfolio.id, quote.bid)
+    account = paper_account(store, portfolio.id, quote.bid, symbol=normalized_symbol)
     if waiting_state is not None:
         return replace(account, state=waiting_state)
     if position is None and signal.action == "BUY" and quote.spread_percent > PAPER_MAX_SPREAD_PERCENT:
@@ -323,13 +350,25 @@ def run_paper_account(
     return account
 
 
-def paper_account(store: DataStore, portfolio_id: int, bid: float) -> PaperAccount:
+def paper_account(
+    store: DataStore,
+    portfolio_id: int,
+    bid: float,
+    *,
+    symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
+) -> PaperAccount:
     portfolio = store.get_portfolio(portfolio_id)
-    position = _position(store, portfolio_id)
+    positions = store.list_positions(portfolio_id)
+    position = _position(store, portfolio_id, symbol)
+    normalized_symbol = symbol.upper().strip()
     orders = store.list_orders(portfolio_id, limit=1_000)
     trades = store.list_trades(portfolio_id)
     quantity = position.quantity if position else 0.0
-    market_value = quantity * bid
+    market_value = sum(
+        item.quantity
+        * (bid if item.symbol == normalized_symbol and bid > 0 else item.current_price)
+        for item in positions
+    )
     equity = portfolio.cash + market_value
     result_eur = equity - portfolio.initial_capital
     total_fees = sum(order.fees for order in orders)
@@ -345,32 +384,42 @@ def paper_account(store: DataStore, portfolio_id: int, bid: float) -> PaperAccou
         equity=equity,
         result_eur=result_eur,
         result_percent=(result_eur / portfolio.initial_capital * 100),
-        state="INVESTIERT" if position else "CASH",
+        state="INVESTIERT" if positions else "CASH",
         total_fees=total_fees,
         total_spread_cost=total_spread_cost,
         total_slippage_cost=total_slippage_cost,
         total_transaction_costs=total_fees + total_spread_cost + total_slippage_cost,
         completed_trades=len(trades),
+        open_positions=len(positions),
     )
 
 
-def current_paper_account(store: DataStore, bid: float | None = None) -> PaperAccount:
+def current_paper_account(
+    store: DataStore,
+    bid: float | None = None,
+    *,
+    symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
+) -> PaperAccount:
     """Liest das Papierkonto, ohne eine Order auszulösen."""
 
     portfolio = _portfolio(store)
-    position = _position(store, portfolio.id)
+    position = _position(store, portfolio.id, symbol)
     current_bid = bid if bid is not None else position.current_price if position is not None else 0.0
-    return paper_account(store, portfolio.id, current_bid)
+    return paper_account(store, portfolio.id, current_bid, symbol=symbol)
 
 
 def paper_order_events(
     store: DataStore,
     portfolio_id: int,
     trading_timestamp: pd.Timestamp,
+    *,
+    symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
 ) -> list[dict[str, object]]:
     trading_date = trading_timestamp.tz_convert("Europe/Berlin").date()
     day_orders = []
     for order in reversed(store.list_orders(portfolio_id, limit=100)):
+        if order.symbol != symbol.upper().strip():
+            continue
         timestamp = pd.Timestamp(order.executed_at)
         timestamp = timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
         if timestamp.tz_convert("Europe/Berlin").date() == trading_date:

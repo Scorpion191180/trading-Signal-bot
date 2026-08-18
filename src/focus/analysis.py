@@ -651,6 +651,8 @@ def analyze_timeframe(frame: pd.DataFrame, spec: TimeframeSpec) -> tuple[Timefra
 
 def analyze_timeframes(
     frames: dict[str, pd.DataFrame],
+    *,
+    allow_neutral_long_term_context: bool = False,
 ) -> tuple[dict[str, TimeframeAnalysis], dict[str, pd.DataFrame], dict[str, str]]:
     analyses: dict[str, TimeframeAnalysis] = {}
     enriched: dict[str, pd.DataFrame] = {}
@@ -663,6 +665,38 @@ def analyze_timeframes(
         try:
             analyses[spec.key], enriched[spec.key] = analyze_timeframe(frame, spec)
         except (ValueError, IndexError) as exc:
+            neutral_minimum = {"1d": 35, "1wk": 8, "1mo": 2}.get(spec.key)
+            if (
+                allow_neutral_long_term_context
+                and neutral_minimum is not None
+                and len(frame) >= neutral_minimum
+            ):
+                context_name = {
+                    "1d": "Tages",
+                    "1wk": "Wochen",
+                    "1mo": "Monats",
+                }[spec.key]
+                neutral_frame = add_focus_indicators(frame.tail(800), spec)
+                analyses[spec.key] = TimeframeAnalysis(
+                    key=spec.key,
+                    label=spec.label,
+                    score=50.0,
+                    trend="Seitwärts",
+                    setup="noch zu kurze L&S-Historie",
+                    price=float(frame["close"].iloc[-1]),
+                    rsi=50.0,
+                    relative_volume=None,
+                    data_timestamp=pd.Timestamp(neutral_frame.index[-1]).to_pydatetime(),
+                    reasons=(
+                        f"{context_name}kontext bleibt bis zu genügend vollständigen "
+                        f"{context_name.lower()}kerzen neutral.",
+                    ),
+                    warnings=(
+                        f"Für diesen Handelsplatz ist die {context_name}historie noch zu kurz.",
+                    ),
+                )
+                enriched[spec.key] = neutral_frame
+                continue
             errors[spec.key] = str(exc)
     return analyses, enriched, errors
 
@@ -823,6 +857,7 @@ def _trend_horizons(
     enriched: dict[str, pd.DataFrame],
     price: float,
     ensemble_score: float,
+    minimum_move_percent: float = 0.15,
 ) -> tuple[TrendForecast, ...]:
     """Leitet getrennte Horizonte aus Preisaktion, Zeitebenen und ATR ab."""
 
@@ -858,11 +893,12 @@ def _trend_horizons(
         volatility = max(volatility_inputs)
         directional_shift = ((horizon_score - 50) / 50) * volatility * 0.75
         expected = max(price + directional_shift, 0.001)
+        expected_return_percent = directional_shift / price * 100
         direction = (
             "STEIGEND"
-            if horizon_score >= 58
+            if expected_return_percent > minimum_move_percent
             else "FALLEND"
-            if horizon_score <= 42
+            if expected_return_percent < -minimum_move_percent
             else "SEITWÄRTS"
         )
         disagreement = abs(price_action_score - lagging_score)
@@ -987,6 +1023,7 @@ def build_strategy_ensemble(
         enriched,
         price,
         score,
+        minimum_move_percent=0.15,
     )
     short_direction_score = sum(
         {"STEIGEND": 1.0, "FALLEND": -1.0, "SEITWÄRTS": 0.0}[forecast.direction] * weight

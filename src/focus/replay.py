@@ -21,7 +21,7 @@ from .analysis import (
 )
 from .data import resample_ohlcv
 from .paper import PAPER_STARTING_CAPITAL, current_paper_account, run_paper_account
-from .quality import forecast_quality_map, released_horizon_payloads
+from .quality import forecast_horizon_payloads, forecast_quality_map
 from .quote import LiveQuote, resample_intraday_candles
 from .worker import _completed_candles
 
@@ -140,9 +140,9 @@ def replay_focus_day(
     selected_date: date | None = None,
     confirmation_observations: int = 2,
     forecast_store: DataStore | None = None,
-    forecast_model_version: str = "focus-market-v8-replay",
+    forecast_model_version: str = "focus-market-v9-replay",
 ) -> FocusReplayResult:
-    """Spielt v8 Minute fuer Minute ohne Zugriff auf spaetere Kerzen durch."""
+    """Spielt die aktuelle Strategie Minute fuer Minute ohne spaetere Kerzen durch."""
 
     if confirmation_observations < 1:
         raise ValueError("Die Zahl der Bestätigungsbeobachtungen muss positiv sein.")
@@ -241,7 +241,7 @@ def replay_focus_day(
                     market_regime=signal.market_regime,
                     strategy_votes=signal.strategy_votes,
                     spread_percent=quote.spread_percent,
-                    horizon_forecasts=released_horizon_payloads(signal, quality),
+                    horizon_forecasts=forecast_horizon_payloads(signal, quality),
                     model_version=forecast_model_version,
                 )
                 saved_forecasts += int(inserted)

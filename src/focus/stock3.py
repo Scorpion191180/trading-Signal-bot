@@ -1,10 +1,11 @@
-"""Öffentliche L&S-Geld-/Briefkurse des frei sichtbaren stock3-D-Wave-Charts."""
+"""Öffentliche L&S-Geld-/Briefkurse frei sichtbarer stock3-Charts."""
 
 from __future__ import annotations
 
 import json
 import ssl
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,29 @@ STOCK3_INSTRUMENT_ID = 61824087
 LANG_SCHWARZ_EXCHANGE_ID = 22
 SUPPORTED_RESOLUTIONS = {60, 300, 1800, 3600, 86400}
 DEFAULT_HISTORY_CACHE = Path(__file__).resolve().parents[2] / "data" / "stock3_cache"
+
+
+@dataclass(frozen=True)
+class Stock3Instrument:
+    name: str
+    instrument_id: int
+    isin: str
+    cache_prefix: str
+
+
+DWAVE_STOCK3 = Stock3Instrument("D-Wave Quantum", STOCK3_INSTRUMENT_ID, "US26740W1099", "dwave")
+COMPARISON_INSTRUMENTS = (
+    Stock3Instrument("SpaceX", 96904496, "US84615Q1031", "spacex"),
+    Stock3Instrument(
+        "Intuitive Machines",
+        52599841,
+        "US46125A1007",
+        "intuitive_machines",
+    ),
+    Stock3Instrument("Apple", 121472, "US0378331005", "apple"),
+    Stock3Instrument("Nvidia", 121019, "US67066G1040", "nvidia"),
+    Stock3Instrument("IonQ", 52011085, "US46222L1089", "ionq"),
+)
 
 
 def _number(value: object, *, field: str) -> float:
@@ -44,7 +68,13 @@ def _timestamp(value: object) -> datetime:
         raise ProviderError("stock3 liefert keinen gültigen L&S-Kurszeitpunkt.") from exc
 
 
-def parse_stock3_quote(payload: dict[str, Any], *, fetched_at: datetime) -> LiveQuote:
+def parse_stock3_quote(
+    payload: dict[str, Any],
+    *,
+    fetched_at: datetime,
+    isin: str = DWAVE_STOCK3.isin,
+    instrument_name: str = DWAVE_STOCK3.name,
+) -> LiveQuote:
     """Liest ausschließlich die L&S-Quotation mit Börsen-ID 22."""
 
     data = payload.get("data")
@@ -62,7 +92,7 @@ def parse_stock3_quote(payload: dict[str, Any], *, fetched_at: datetime) -> Live
         None,
     )
     if quotation is None:
-        raise ProviderError("stock3 liefert aktuell keinen L&S-Kurs für D-Wave.")
+        raise ProviderError(f"stock3 liefert aktuell keinen L&S-Kurs für {instrument_name}.")
     bid_data = quotation.get("bid")
     ask_data = quotation.get("ask")
     if not isinstance(bid_data, dict) or not isinstance(ask_data, dict):
@@ -76,7 +106,7 @@ def parse_stock3_quote(payload: dict[str, Any], *, fetched_at: datetime) -> Live
     return LiveQuote(
         provider="stock3 öffentlicher L&S-Kurs",
         venue="Lang & Schwarz",
-        isin="US26740W1099",
+        isin=isin,
         bid=bid,
         ask=ask,
         bid_size=None,
@@ -167,9 +197,8 @@ def decode_stock3_candles(
 
 
 class Stock3LangSchwarzProvider:
-    """Ruft den ohne Anmeldung sichtbaren D-Wave-Chart von stock3 ab."""
+    """Ruft einen ohne Anmeldung sichtbaren L&S-Chart von stock3 ab."""
 
-    quote_endpoint = f"https://api.stock3.com/instrument/{STOCK3_INSTRUMENT_ID}"
     chart_endpoint = "https://charting.stock3.com/d/q"
 
     def __init__(
@@ -179,10 +208,12 @@ class Stock3LangSchwarzProvider:
         clock: Callable[[], datetime] | None = None,
         ssl_context: ssl.SSLContext | None = None,
         cache_directory: Path | None = None,
+        instrument: Stock3Instrument = DWAVE_STOCK3,
     ) -> None:
         self._opener = opener
         self._clock = clock or (lambda: datetime.now(UTC))
         self._ssl_context = ssl_context or ssl.create_default_context(cafile=certifi.where())
+        self.instrument = instrument
         self._cache_directory = (
             cache_directory
             if cache_directory is not None
@@ -194,7 +225,9 @@ class Stock3LangSchwarzProvider:
     def _cache_path(self, resolution_seconds: int, quote_type: str) -> Path | None:
         if self._cache_directory is None:
             return None
-        return self._cache_directory / f"dwave_ls_{quote_type}_{resolution_seconds}.csv"
+        return self._cache_directory / (
+            f"{self.instrument.cache_prefix}_ls_{quote_type}_{resolution_seconds}.csv"
+        )
 
     def _write_history_cache(
         self,
@@ -262,9 +295,15 @@ class Stock3LangSchwarzProvider:
             "bid[value,time,prevClose,open,high,low,change],"
             "ask[value,time,prevClose,open,high,low,change]]"
         )
-        url = f"{self.quote_endpoint}?{urlencode({'client_id': 'stock3', 'select': select})}"
+        quote_endpoint = f"https://api.stock3.com/instrument/{self.instrument.instrument_id}"
+        url = f"{quote_endpoint}?{urlencode({'client_id': 'stock3', 'select': select})}"
         payload = self._read_json(url, label="Der öffentliche stock3-L&S-Kurs")
-        return parse_stock3_quote(payload, fetched_at=self._clock())
+        return parse_stock3_quote(
+            payload,
+            fetched_at=self._clock(),
+            isin=self.instrument.isin,
+            instrument_name=self.instrument.name,
+        )
 
     def history(self, resolution_seconds: int, *, quote_type: str = "bid") -> pd.DataFrame:
         if resolution_seconds not in SUPPORTED_RESOLUTIONS:
@@ -273,7 +312,7 @@ class Stock3LangSchwarzProvider:
             raise ValueError("stock3 unterstützt hier nur Geld- oder Briefkurse.")
         query = urlencode(
             {
-                "iid": STOCK3_INSTRUMENT_ID,
+                "iid": self.instrument.instrument_id,
                 "res": resolution_seconds,
                 "qs": quote_type,
                 "eid": LANG_SCHWARZ_EXCHANGE_ID,

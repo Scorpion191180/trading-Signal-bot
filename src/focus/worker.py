@@ -1,4 +1,4 @@
-"""Vom Streamlit-Prozess unabhängiger D-Wave-Papierhandel."""
+"""Vom Streamlit-Prozess unabhängiger L&S-Mehraktien-Papierhandel."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import logging
 import signal as process_signal
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time
 from pathlib import Path
 from time import monotonic
@@ -30,9 +30,9 @@ from .analysis import (
 from .context import FocusContextProvider
 from .data import resample_ohlcv
 from .paper import PAPER_STRATEGY_VERSION, PaperAccount, current_paper_account, run_paper_account
+from .quality import forecast_horizon_payloads, forecast_quality_map
 from .quote import LiveQuote, resample_intraday_candles
-from .quality import forecast_quality_map, released_horizon_payloads
-from .stock3 import Stock3LangSchwarzProvider
+from .stock3 import COMPARISON_INSTRUMENTS, Stock3Instrument, Stock3LangSchwarzProvider
 
 LOGGER = logging.getLogger(__name__)
 BOT_KEY = "dwave-paper"
@@ -42,6 +42,7 @@ ENTRY_CONFIRMATION_CYCLES = 2
 BERLIN = ZoneInfo("Europe/Berlin")
 HISTORY_TTL_SECONDS = {60: 10, 300: 60, 3600: 300, 86400: 900}
 CONTEXT_TTL_SECONDS = 300
+COMPARISON_POLL_SECONDS = 60
 
 
 class MarketProvider(Protocol):
@@ -130,15 +131,20 @@ class FocusPaperWorker:
         provider: MarketProvider | None = None,
         context_provider: FocusContextProvider | None = None,
         clock: Callable[[], datetime] | None = None,
+        comparison_provider_factory: Callable[[Stock3Instrument], MarketProvider] | None = None,
     ) -> None:
         self.store = store
+        self._comparison_enabled = provider is None or comparison_provider_factory is not None
         self.provider = provider or Stock3LangSchwarzProvider()
+        self._comparison_provider_factory = comparison_provider_factory or (
+            lambda instrument: Stock3LangSchwarzProvider(instrument=instrument)
+        )
         self.context_provider = context_provider
         self.clock = clock or (lambda: datetime.now(UTC))
         self._history_cache: dict[int, tuple[float, pd.DataFrame]] = {}
         self._context_cache: tuple[float, ExternalMarketContext] | None = None
-        self._entry_candidate_bucket: str | None = None
-        self._entry_candidate_cycles = 0
+        self._entry_candidates: dict[str, tuple[str, int]] = {}
+        self._last_comparison_poll = 0.0
 
     def _history(self, resolution_seconds: int) -> pd.DataFrame:
         cached = self._history_cache.get(resolution_seconds)
@@ -185,29 +191,46 @@ class FocusPaperWorker:
         self._context_cache = (monotonic(), context)
         return context
 
-    def _entry_confirmed(self, signal: IntradaySignal, signal_at: datetime) -> bool:
+    def _entry_confirmed(
+        self,
+        signal: IntradaySignal,
+        signal_at: datetime,
+        *,
+        symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
+    ) -> bool:
         """Verlangt zwei gleiche Messungen innerhalb des neuen Fuenf-Minuten-Blocks."""
 
         timestamp = _aware_bucket_timestamp(signal_at)
         bucket = timestamp.strftime("%Y%m%dT%H%MZ")
+        normalized_symbol = symbol.upper().strip()
         if signal.action != "BUY":
-            self._entry_candidate_bucket = None
-            self._entry_candidate_cycles = 0
+            self._entry_candidates.pop(normalized_symbol, None)
             return False
-        if bucket != self._entry_candidate_bucket:
-            self._entry_candidate_bucket = bucket
-            self._entry_candidate_cycles = 1
+        previous_bucket, previous_cycles = self._entry_candidates.get(
+            normalized_symbol,
+            ("", 0),
+        )
+        if bucket != previous_bucket:
+            cycles = 1
         else:
-            self._entry_candidate_cycles += 1
-        return self._entry_candidate_cycles >= ENTRY_CONFIRMATION_CYCLES
+            cycles = previous_cycles + 1
+        self._entry_candidates[normalized_symbol] = (bucket, cycles)
+        return cycles >= ENTRY_CONFIRMATION_CYCLES
 
-    def _record_forecast(self, candles: pd.DataFrame, quote: LiveQuote, signal: IntradaySignal) -> None:
+    def _record_forecast(
+        self,
+        candles: pd.DataFrame,
+        quote: LiveQuote,
+        signal: IntradaySignal,
+        *,
+        symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
+    ) -> None:
         observations = [
             (pd.Timestamp(timestamp).to_pydatetime(), float(price))
             for timestamp, price in candles["close"].items()
         ]
         self.store.evaluate_focus_forecasts(
-            DWAVE_INSTRUMENT.exchange_symbol,
+            symbol,
             observations,
             provider=quote.venue,
         )
@@ -217,9 +240,13 @@ class FocusPaperWorker:
             and signal.forecast_low is not None
             and signal.forecast_high is not None
         ):
-            quality = forecast_quality_map(self.store, PAPER_STRATEGY_VERSION)
+            quality = forecast_quality_map(
+                self.store,
+                PAPER_STRATEGY_VERSION,
+                symbol=symbol,
+            )
             self.store.record_focus_forecast(
-                symbol=DWAVE_INSTRUMENT.exchange_symbol,
+                symbol=symbol,
                 provider=quote.venue,
                 forecast_at=quote.quoted_at or quote.fetched_at,
                 entry_price=quote.bid,
@@ -232,9 +259,94 @@ class FocusPaperWorker:
                 market_regime=signal.market_regime,
                 strategy_votes=signal.strategy_votes,
                 spread_percent=signal.spread_percent or 0.0,
-                horizon_forecasts=released_horizon_payloads(signal, quality),
+                horizon_forecasts=forecast_horizon_payloads(signal, quality),
                 model_version=PAPER_STRATEGY_VERSION,
             )
+
+    @staticmethod
+    def _comparison_frames(
+        provider: Stock3LangSchwarzProvider,
+        quote: LiveQuote,
+    ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+        signal_at = quote.quoted_at or quote.fetched_at
+        minute = _latest_trading_day(provider.history(60), quote)
+        five_minutes = _completed_candles(provider.history(300), 300, signal_at)
+        fifteen_minutes = _completed_candles(
+            resample_intraday_candles(five_minutes, 15),
+            900,
+            signal_at,
+        )
+        hourly = _completed_candles(provider.history(3600), 3600, signal_at)
+        try:
+            daily_history = provider.history(86400)
+        except Exception:
+            daily_history = resample_ohlcv(hourly, "1D", drop_future_label=True)
+        daily = _completed_candles(daily_history, 86400, signal_at)
+        return minute, {
+            "1m": minute,
+            "5m": five_minutes,
+            "15m": fifteen_minutes,
+            "1h": hourly,
+            "1d": daily,
+            "1wk": resample_ohlcv(daily, "W-FRI", drop_future_label=True),
+            "1mo": resample_ohlcv(daily, "ME", drop_future_label=True),
+        }
+
+    def _process_comparison_assets(self, now: datetime) -> int:
+        """Misst und handelt jede weitere Aktie unabhängig im gemeinsamen Papierdepot."""
+
+        if not self._comparison_enabled:
+            return 0
+        current_tick = monotonic()
+        if current_tick - self._last_comparison_poll < COMPARISON_POLL_SECONDS:
+            return 0
+        self._last_comparison_poll = current_tick
+        processed = 0
+        for instrument in COMPARISON_INSTRUMENTS:
+            try:
+                provider = self._comparison_provider_factory(instrument)
+                quote = provider.quote()
+                candles, frames = self._comparison_frames(provider, quote)
+                analyses, enriched, errors = analyze_timeframes(
+                    frames,
+                    allow_neutral_long_term_context=True,
+                )
+                if errors:
+                    raise RuntimeError("; ".join(errors.values()))
+                signal = build_market_signal(
+                    analyses,
+                    enriched,
+                    now=now,
+                    live_price=quote.bid,
+                    session_close=time(23, 0),
+                    spread_percent=quote.spread_percent,
+                    order_imbalance=None,
+                    require_volume_confirmation=False,
+                    enforce_liquidity_filter=False,
+                )
+                signal_at = quote.quoted_at or quote.fetched_at
+                run_paper_account(
+                    self.store,
+                    quote,
+                    signal,
+                    signal_at=signal_at,
+                    entry_confirmed=self._entry_confirmed(
+                        signal,
+                        signal_at,
+                        symbol=instrument.isin,
+                    ),
+                    symbol=instrument.isin,
+                )
+                self._record_forecast(
+                    candles,
+                    quote,
+                    signal,
+                    symbol=instrument.isin,
+                )
+                processed += 1
+            except Exception as exc:
+                LOGGER.warning("Papierzyklus für %s fehlgeschlagen: %s", instrument.name, exc)
+        return processed
 
     def _bot_enabled(self) -> bool:
         account = current_paper_account(self.store)
@@ -302,6 +414,7 @@ class FocusPaperWorker:
             self.pause(now)
             return None
 
+        comparison_count = self._process_comparison_assets(now)
         quote = self.provider.quote()
         candles, frames = self._frames(quote)
         analyses, enriched, errors = analyze_timeframes(frames)
@@ -328,16 +441,29 @@ class FocusPaperWorker:
             quote,
             signal,
             signal_at=signal_at,
-            entry_confirmed=self._entry_confirmed(signal, signal_at),
+            entry_confirmed=self._entry_confirmed(
+                signal,
+                signal_at,
+                symbol=DWAVE_INSTRUMENT.exchange_symbol,
+            ),
         )
         self._record_forecast(candles, quote, signal)
+        refreshed_account = current_paper_account(self.store, quote.bid)
+        account = (
+            replace(refreshed_account, state=account.state)
+            if refreshed_account.open_positions == 0 and account.state != "CASH"
+            else refreshed_account
+        )
         self.store.update_focus_bot_status(
             bot_key=BOT_KEY,
             run_state="ACTIVE",
             signal_action=signal.action,
             signal_score=signal.score,
             account_state=account.state,
-            message=f"L&S geprüft · {signal.headline}",
+            message=(
+                f"L&S geprüft · D-Wave {signal.headline} · "
+                f"{comparison_count}/{len(COMPARISON_INSTRUMENTS)} weitere Aktien"
+            ),
             heartbeat_at=now,
             quote_at=signal_at,
         )
@@ -352,7 +478,7 @@ class FocusPaperWorker:
                 self.record_warmup(str(exc), now)
                 delay = ACTIVE_POLL_SECONDS
             except Exception as exc:
-                LOGGER.exception("Der D-Wave-Papier-Bot konnte den Zyklus nicht abschließen.")
+                LOGGER.exception("Der Mehraktien-Papier-Bot konnte den Zyklus nicht abschließen.")
                 self.record_error(exc, now)
                 delay = ACTIVE_POLL_SECONDS
             else:
@@ -382,7 +508,7 @@ def _singleton_lock() -> object:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Unabhängiger D-Wave-Papier-Bot")
+    parser = argparse.ArgumentParser(description="Unabhängiger L&S-Mehraktien-Papier-Bot")
     parser.add_argument("--once", action="store_true", help="Genau einen Prüfzyklus ausführen")
     parser.add_argument("--force", action="store_true", help="Daten auch außerhalb der Sitzung prüfen")
     args = parser.parse_args()

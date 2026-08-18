@@ -3,18 +3,30 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+import pandas as pd
 import pytest
 
 from src.focus.analysis import PROFIT_EXHAUSTION_EVENT, IntradaySignal
-from src.focus.paper import PAPER_PORTFOLIO_NAME, run_paper_account
+from src.focus.paper import (
+    PAPER_PORTFOLIO_NAME,
+    current_paper_account,
+    paper_order_events,
+    run_paper_account,
+)
 from src.focus.quote import LiveQuote
 
 
-def _quote(bid: float, ask: float, timestamp: datetime) -> LiveQuote:
+def _quote(
+    bid: float,
+    ask: float,
+    timestamp: datetime,
+    *,
+    isin: str = "US26740W1099",
+) -> LiveQuote:
     return LiveQuote(
         provider="stock3 öffentlicher L&S-Kurs",
         venue="Lang & Schwarz",
-        isin="US26740W1099",
+        isin=isin,
         bid=bid,
         ask=ask,
         bid_size=None,
@@ -280,3 +292,55 @@ def test_focus_paper_account_never_executes_stale_market_signal(store):
     assert account.quantity == 0
     portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
     assert store.list_orders(portfolio.id) == []
+
+
+def test_focus_paper_account_keeps_multiple_assets_separate(store):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    dwave_quote = _quote(18.0, 18.05, now)
+    spacex_isin = "US84615Q1031"
+    spacex_quote = _quote(31.0, 31.05, now, isin=spacex_isin)
+
+    run_paper_account(
+        store,
+        dwave_quote,
+        _signal("BUY", dwave_quote.bid),
+        signal_at=now,
+    )
+    combined = run_paper_account(
+        store,
+        spacex_quote,
+        replace(
+            _signal("BUY", spacex_quote.bid),
+            stop_loss=30.5,
+            target=33.0,
+        ),
+        signal_at=now,
+        symbol=spacex_isin,
+    )
+
+    positions = store.list_positions(combined.portfolio_id)
+    assert {position.symbol for position in positions} == {"RQ0", spacex_isin}
+    assert combined.open_positions == 2
+    assert combined.market_value == pytest.approx(
+        sum(position.quantity * position.current_price for position in positions)
+    )
+    assert len(store.list_orders(combined.portfolio_id)) == 2
+
+    spacex_events = paper_order_events(
+        store,
+        combined.portfolio_id,
+        pd.Timestamp(now),
+        symbol=spacex_isin,
+    )
+    assert [event["action"] for event in spacex_events] == ["BUY"]
+
+    sold_spacex = run_paper_account(
+        store,
+        _quote(33.0, 33.05, now + timedelta(minutes=6), isin=spacex_isin),
+        _signal("SELL", 33.0),
+        signal_at=now + timedelta(minutes=6),
+        symbol=spacex_isin,
+    )
+    assert sold_spacex.open_positions == 1
+    assert [position.symbol for position in store.list_positions(combined.portfolio_id)] == ["RQ0"]
+    assert current_paper_account(store).state == "INVESTIERT"

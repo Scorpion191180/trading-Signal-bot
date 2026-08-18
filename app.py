@@ -11,7 +11,7 @@ from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "1.5-forecast-v8-quality-gate"
+SERVICE_SCHEMA_VERSION = "1.7-multi-asset-paper-charts"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
@@ -67,6 +67,26 @@ st.markdown(
     .live-price span {font-size: .88rem; margin-left: .2rem;}
     .live-price small {display: block; color: #728087; font-size: .62rem; font-weight: 500;}
     [data-testid="stPlotlyChart"] {border-top: 1px solid #2a3438; border-bottom: 1px solid #2a3438;}
+    [data-testid="stPlotlyChart"] .hoverlayer .hovertext {display: none !important;}
+    .focus-fixed-hover {
+      position: absolute; z-index: 20; top: 3.1rem; right: 3.4rem; max-width: min(31rem, 55%);
+      display: none; flex-direction: column; gap: .16rem; padding: .38rem .5rem;
+      border: 1px solid #46555b; border-radius: .28rem; background: rgba(13,19,21,.94);
+      box-shadow: 0 .2rem .8rem rgba(0,0,0,.32); color: #cbd5e1; font-size: .64rem;
+      line-height: 1.3; pointer-events: none;
+    }
+    .focus-fixed-hover strong {color: #f8fafc; font-size: .68rem;}
+    .focus-fixed-hover span {display: block;}
+    .focus-fixed-hover b {color: #e2e8f0;}
+    .comparison-header {
+      display: flex; align-items: baseline; gap: .65rem; flex-wrap: wrap;
+      margin: .7rem 0 .08rem; padding: .32rem .5rem; border: 1px solid #2b3539;
+      border-radius: .28rem; background: #0f1619; color: #cbd5e1; font-size: .72rem;
+    }
+    .comparison-header b {color: #f8fafc; font-size: .92rem;}
+    .comparison-header span, .comparison-header small {color: #77878d;}
+    .comparison-header strong {margin-left: auto; color: #f8fafc; font-size: .88rem;}
+    .comparison-header em {font-style: normal; font-weight: 700;}
     .chart-selection-summary {
       display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; margin: .08rem 0 .1rem;
       padding: .18rem .45rem; border: 1px solid #2b3539; background: #0f1619; color: #9eacb1;
@@ -83,10 +103,10 @@ st.markdown(
     .paper-account-bar span {padding-left: .65rem; border-left: 1px solid #344147;}
     .paper-account-bar small {margin-left: auto; color: #77878d; font-size: .59rem;}
     .bot-console {
-      display: grid; grid-template-columns: repeat(8, max-content); align-items: center;
+      display: flex; flex-wrap: wrap; align-items: center;
       gap: .34rem .75rem; margin: .05rem 0 .12rem; padding: .3rem .5rem;
       border: 1px solid #334147; border-radius: .3rem; background: #10181b;
-      color: #d8e0e3; font-size: .68rem; overflow-x: auto; scrollbar-width: none;
+      color: #d8e0e3; font-size: .68rem; overflow: hidden;
     }
     .bot-console span {white-space: nowrap;}
     .bot-console small {color: #75858b; font-size: .52rem; letter-spacing: .055em; margin-right: .18rem;}
@@ -159,6 +179,9 @@ st.markdown(
     [data-testid="stCaptionContainer"] {color: #77868c; font-size: .68rem;}
     .modebar {top: 6px !important; right: 4px !important;}
     .modebar-btn path {fill: #a7b3b8 !important;}
+    [data-testid="stPlotlyChart"], .js-plotly-plot, .plot-container {
+      overflow: hidden !important;
+    }
     @media (max-width: 760px) {
       [data-testid="stHeader"] {height: 0; min-height: 0;}
       .block-container {padding: .08rem .18rem .12rem;}
@@ -167,7 +190,7 @@ st.markdown(
       .instrument-name {font-size: .95rem;}
       .live-price {font-size: .9rem;}
       .bot-console {
-        grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .22rem .45rem;
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .22rem .45rem;
         padding: .28rem .38rem; font-size: .64rem; overflow: hidden;
       }
       .bot-console span {min-width: 0; overflow: hidden; text-overflow: ellipsis;}

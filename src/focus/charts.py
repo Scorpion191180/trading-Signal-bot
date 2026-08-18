@@ -82,6 +82,9 @@ def day_signal_chart(
     forecast_horizon_minutes: int = 60,
     forecast_quality: dict[int, dict[str, object]] | None = None,
     axis_ranges: dict[str, list[object]] | None = None,
+    instrument_name: str = "D-Wave Quantum",
+    chart_height: int = 525,
+    chart_identity: str = "dwave",
 ) -> go.Figure:
     """Professioneller Kurschart mit Livekurs, Werkzeugen und erklärbaren Signalen."""
 
@@ -193,53 +196,38 @@ def day_signal_chart(
         lower_error = [0.0] + [
             item.expected_price - item.expected_low for item in signal.trend_forecasts
         ]
-        released_now = []
         hover_text = ["Aktueller L&S Bid"]
         for item in signal.trend_forecasts:
             validation = quality_by_horizon.get(item.minutes, {})
-            threshold = validation.get("threshold")
-            released = bool(
-                validation.get("qualified")
-                and threshold is not None
-                and item.confidence >= float(threshold)
-            )
-            released_now.append(released)
             verified_accuracy = validation.get("verification_accuracy")
             verified_samples = int(validation.get("verification_samples") or 0)
             status = (
-                f"75%-freigegeben · {float(verified_accuracy):.1f} % / "
-                f"{verified_samples} spätere Fälle"
-                if released and verified_accuracy is not None
-                else "Nicht als Vorhersage freigegeben · 75 % noch nicht bestätigt"
+                f"Gemessen: {float(verified_accuracy):.1f} % / {verified_samples} spätere Fälle"
+                if verified_accuracy is not None
+                else "Trefferquote wird nach Eintreffen des Zielzeitpunkts gemessen"
             )
             hover_text.append(
                 f"{item.minutes}-Minuten-Ziel {item.expected_price:.3f} €<br>"
                 f"{item.direction.title()} · Modellstärke {item.confidence:.0f} %<br>{status}"
             )
-        any_released = any(released_now)
-        path_color = "#22d3ee" if any_released else "#94a3b8"
+        path_color = "#22d3ee"
         figure.add_trace(
             go.Scatter(
                 x=forecast_x,
                 y=forecast_y,
                 mode="lines+markers+text",
-                name=(
-                    "Aktuelle Prognose · 75%-freigegeben"
-                    if any_released
-                    else "Modelltest · keine Vorhersage"
-                ),
+                name="Aktuelle Prognose",
                 text=[""] + [f"{item.minutes}m" for item in signal.trend_forecasts],
                 textposition=("top center", "top left", "bottom left", "top center", "bottom center", "middle right"),
                 textfont={"size": 11, "color": path_color},
                 line={
                     "color": path_color,
-                    "width": 4.2 if any_released else 2.6,
-                    "dash": "solid" if any_released else "dot",
+                    "width": 4.2,
+                    "dash": "solid",
                 },
                 marker={
                     "size": 10,
-                    "color": [path_color]
-                    + ["#22d3ee" if released else "#64748b" for released in released_now],
+                    "color": path_color,
                     "line": {"width": 1.5, "color": "#ecfeff"},
                 },
                 error_y={
@@ -247,7 +235,7 @@ def day_signal_chart(
                     "symmetric": False,
                     "array": upper_error,
                     "arrayminus": lower_error,
-                    "color": "rgba(148,163,184,.62)" if not any_released else "rgba(34,211,238,.62)",
+                    "color": "rgba(34,211,238,.62)",
                     "thickness": 1.5,
                     "width": 4,
                 },
@@ -260,9 +248,7 @@ def day_signal_chart(
         target_times = [pd.Timestamp(item["target_at"]).tz_convert("Europe/Berlin") for item in forecast_points]
         expected_prices = [float(item["expected_price"]) for item in forecast_points]
         marker_colors = [
-            "#94a3b8"
-            if not item.get("released")
-            else "#22c55e"
+            "#22c55e"
             if item.get("direction_hit") is True
             else "#ef4444"
             if item.get("direction_hit") is False
@@ -274,9 +260,7 @@ def day_signal_chart(
             forecast_at = pd.Timestamp(item["forecast_at"]).tz_convert("Europe/Berlin")
             observed = item.get("observed_price")
             verdict = (
-                "Nur rückwirkende Prüfung – kein freigegebenes Signal"
-                if not item.get("released")
-                else "Richtung getroffen"
+                "Richtung getroffen"
                 if item.get("direction_hit") is True
                 else "Richtung verfehlt"
                 if item.get("direction_hit") is False
@@ -292,9 +276,6 @@ def day_signal_chart(
                 f"Tatsächlich {observed_text}<br>{verdict}"
             )
         completed = [item for item in forecast_points if item.get("direction_hit") is not None]
-        released_completed = [item for item in completed if item.get("released")]
-        hits = sum(item.get("direction_hit") is True for item in released_completed)
-        accuracy = hits / len(released_completed) * 100 if released_completed else None
         raw_hits = sum(item.get("direction_hit") is True for item in completed)
         raw_accuracy = raw_hits / len(completed) * 100 if completed else None
         comparison_name = f"Ziel nach {forecast_horizon_minutes} Min"
@@ -303,12 +284,8 @@ def day_signal_chart(
             version = next(iter(model_versions)).replace("focus-market-", "")
             if version:
                 comparison_name += f" · {version}"
-        if accuracy is not None:
-            comparison_name += f" · freigegeben {hits}/{len(released_completed)} ({accuracy:.0f} %)"
-        else:
-            comparison_name += " · 0 freigegeben"
         if raw_accuracy is not None:
-            comparison_name += f" · Prüfung {raw_hits}/{len(completed)} ({raw_accuracy:.0f} %)"
+            comparison_name += f" · Treffer {raw_hits}/{len(completed)} ({raw_accuracy:.0f} %)"
         figure.add_trace(
             go.Scatter(
                 x=target_times,
@@ -453,7 +430,7 @@ def day_signal_chart(
         align="left",
         showarrow=False,
         text=(
-            f"<b>D-Wave Quantum · {candle_label}</b> · "
+            f"<b>{instrument_name} · {candle_label}</b> · "
             f"O: {float(latest['open']):.3f} · H: {float(latest['high']):.3f} · "
             f"L: {float(latest['low']):.3f} · C: {float(latest['close']):.3f}"
         ),
@@ -462,29 +439,17 @@ def day_signal_chart(
         font={"size": 11, "color": "#cbd5e1"},
     )
     selected_validation = quality_by_horizon.get(forecast_horizon_minutes, {})
-    selected_forecast = next(
-        (
-            item
-            for item in signal.trend_forecasts
-            if item.minutes == forecast_horizon_minutes
-        ),
-        None,
-    )
-    selected_threshold = selected_validation.get("threshold")
-    selected_released = bool(
-        selected_forecast is not None
-        and selected_validation.get("qualified")
-        and selected_threshold is not None
-        and selected_forecast.confidence >= float(selected_threshold)
-    )
     verification_accuracy = selected_validation.get("verification_accuracy")
     verification_samples = int(selected_validation.get("verification_samples") or 0)
     total_quality_samples = int(selected_validation.get("total") or 0)
     raw_quality_accuracy = selected_validation.get("raw_accuracy")
-    if selected_released and verification_accuracy is not None:
+    if not selected_validation:
+        forecast_status = f"PROGNOSE · {forecast_horizon_minutes} Min · noch nicht separat geprüft"
+        forecast_border_color = "#22d3ee"
+    elif verification_accuracy is not None:
         forecast_status = (
-            f"75%-FREIGEGEBEN · {forecast_horizon_minutes} Min · "
-            f"{float(verification_accuracy):.1f} % / {verification_samples} spätere Fälle"
+            f"PROGNOSE · {forecast_horizon_minutes} Min · bisher "
+            f"{float(verification_accuracy):.1f} % / {verification_samples} spätere Testfälle"
         )
         forecast_border_color = "#22d3ee"
     else:
@@ -494,15 +459,15 @@ def day_signal_chart(
             else f" · {total_quality_samples}/60 Fälle"
         )
         forecast_status = (
-            f"KEINE VORHERSAGE · {forecast_horizon_minutes} Min · Ziel 75 % noch nicht bestätigt"
+            f"PROGNOSE · {forecast_horizon_minutes} Min · Trefferziel 75 %"
             f"{measured}"
         )
-        forecast_border_color = "#64748b"
+        forecast_border_color = "#22d3ee"
     figure.add_annotation(
         xref="paper",
         yref="paper",
         x=0.01,
-        y=0.925,
+        y=-0.105,
         xanchor="left",
         yanchor="top",
         align="left",
@@ -601,7 +566,7 @@ def day_signal_chart(
 
     xaxis: dict[str, object] = {
         "title": "",
-        "uirevision": f"dwave-x-{period_label}-{candle_minutes}-{chart_style}",
+        "uirevision": f"{chart_identity}-x-{period_label}-{candle_minutes}-{chart_style}",
         "autorange": False,
         "range": default_x_range,
         "tickformat": (
@@ -634,7 +599,7 @@ def day_signal_chart(
     yaxis: dict[str, object] = {
         "title": "",
         "side": "right",
-        "uirevision": f"dwave-y-{period_label}-{candle_minutes}-{chart_style}",
+        "uirevision": f"{chart_identity}-y-{period_label}-{candle_minutes}-{chart_style}",
         "autorange": False,
         "range": default_y_range,
         "fixedrange": False,
@@ -654,12 +619,12 @@ def day_signal_chart(
         if stored_y_span < default_y_span * 0.75:
             yaxis["range"] = stored_y
     figure.update_layout(
-        height=525,
-        margin={"l": 10, "r": 54, "t": 10, "b": 12},
+        height=chart_height,
+        margin={"l": 10, "r": 54, "t": 10, "b": 58},
         xaxis_rangeslider_visible=False,
         xaxis=xaxis,
         yaxis=yaxis,
-        hovermode="x",
+        hovermode="x unified",
         hoverdistance=50,
         spikedistance=-1,
         hoverlabel={"bgcolor": "#1c2529", "font": {"color": "#f8fafc"}},
@@ -669,7 +634,7 @@ def day_signal_chart(
             and (bool(forecast_points) or bool(signal.trend_forecasts))
         ),
         legend={"orientation": "h", "yanchor": "top", "y": 0.90, "x": 0.01},
-        uirevision=f"dwave-professional-{period_label}-{candle_minutes}-{chart_style}",
+        uirevision=f"{chart_identity}-professional-{period_label}-{candle_minutes}-{chart_style}",
         plot_bgcolor="#12191c",
         paper_bgcolor="#12191c",
         font={"color": "#cbd5e1", "family": "Inter, Arial, sans-serif"},

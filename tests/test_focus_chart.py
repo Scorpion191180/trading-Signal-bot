@@ -85,10 +85,15 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     assert figure.data[1].name == "L&S Bid"
     assert figure.data[1].y[0] == quote.bid
     assert any("HALTEN" in annotation.text for annotation in figure.layout.annotations)
+    signal_annotation = next(
+        annotation for annotation in figure.layout.annotations if "HALTEN" in annotation.text
+    )
+    assert signal_annotation.y < 0
     assert figure.layout.uirevision == "dwave-professional-Intraday-5-Kerzen"
     assert figure.layout.dragmode == "pan"
     assert figure.layout.xaxis.showspikes
     assert figure.layout.yaxis.side == "right"
+    assert figure.layout.hovermode == "x unified"
     assert any("Einstand" in annotation.text for annotation in figure.layout.annotations)
     assert any("Investiert 171.00 €" in annotation.text for annotation in figure.layout.annotations)
     assert any("Verkaufswert 173.80 €" in annotation.text for annotation in figure.layout.annotations)
@@ -262,7 +267,7 @@ def test_historical_forecast_is_drawn_at_its_target_time():
     )
 
     forecast_trace = next(trace for trace in figure.data if trace.name.startswith("Ziel nach 60 Min"))
-    current_trace = next(trace for trace in figure.data if trace.name.startswith("Modelltest"))
+    current_trace = next(trace for trace in figure.data if trace.name == "Aktuelle Prognose")
     assert pd.Timestamp(forecast_trace.x[0]).tz_convert("UTC") == pd.Timestamp(target_at)
     assert forecast_trace.marker.color[0] == "#22c55e"
     assert "1/1 (100 %)" in forecast_trace.name
@@ -271,6 +276,7 @@ def test_historical_forecast_is_drawn_at_its_target_time():
     issued_trace = next(trace for trace in figure.data if trace.name.startswith("Erstellt"))
     assert pd.Timestamp(issued_trace.x[0]).tz_convert("UTC") == pd.Timestamp(history[0]["forecast_at"])
     assert current_trace.line.width >= 2.5
+    assert current_trace.line.dash == "solid"
     assert current_trace.marker.size >= 8
     assert pd.Timestamp(figure.layout.xaxis.range[1]) > pd.Timestamp(current_trace.x[-1])
     assert float(figure.layout.yaxis.range[0]) < 16.75

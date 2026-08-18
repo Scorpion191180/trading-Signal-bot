@@ -26,7 +26,7 @@ from .analysis import (
 )
 from .charts import day_signal_chart
 from .context import FocusContextProvider
-from .data import TimeframeBundle, load_dwave_timeframes
+from .data import TimeframeBundle, load_dwave_timeframes, resample_ohlcv
 from .display import (
     DEFAULT_INTERVAL,
     DISPLAY_INTERVAL_LABELS,
@@ -44,7 +44,7 @@ from .quote import (
     resample_intraday_candles,
 )
 from .replay import replay_focus_day
-from .stock3 import Stock3LangSchwarzProvider
+from .stock3 import COMPARISON_INSTRUMENTS, Stock3Instrument, Stock3LangSchwarzProvider
 
 COMPACT_PERIOD_OPTIONS = ("Intraday", "1W", "1M", "3M", "1J", "Max")
 UI_REFRESH_SECONDS = 1
@@ -117,6 +117,114 @@ _ZOOM_TRACKER = st.components.v2.component(
     js=_ZOOM_TRACKER_JS,
 )
 
+_CHART_HOVER_PANEL_JS = """
+export default function(component) {
+    const attached = new Map();
+    const scroller = document.querySelector('[data-testid="stMain"]');
+    let savedScroll = Number(sessionStorage.getItem('focus-chart-scroll-y') || scroller?.scrollTop || 0);
+    let scrollTimer = null;
+    const escapeHtml = (value) => String(value ?? '')
+        .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    const number = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(3) + ' €' : '–';
+    const clean = (value) => escapeHtml(value).replaceAll('&lt;br&gt;', ' · ');
+
+    const attach = () => {
+        document.querySelectorAll('.js-plotly-plot').forEach((plot) => {
+            if (attached.has(plot) || typeof plot.on !== 'function') return;
+            const wrapper = plot.parentElement;
+            if (!wrapper) return;
+            wrapper.style.position = 'relative';
+            const panel = document.createElement('div');
+            panel.className = 'focus-fixed-hover';
+            panel.style.display = 'none';
+            wrapper.appendChild(panel);
+            const show = (event) => {
+                const points = event?.points || [];
+                if (!points.length) return;
+                const first = points[0];
+                const timestamp = new Date(first.x);
+                const title = Number.isNaN(timestamp.getTime())
+                    ? escapeHtml(first.x)
+                    : timestamp.toLocaleString('de-DE', {
+                        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+                    });
+                const rows = [];
+                const candle = points.find((point) => point.open !== undefined);
+                if (candle) {
+                    rows.push(
+                        `<b>O ${number(candle.open)}</b> · H ${number(candle.high)} · ` +
+                        `L ${number(candle.low)} · C ${number(candle.close)}`
+                    );
+                }
+                points.forEach((point) => {
+                    if (point === candle) return;
+                    const label = point.data?.name || point.fullData?.name || 'Wert';
+                    if (point.hovertext) rows.push(`<b>${escapeHtml(label)}</b> · ${clean(point.hovertext)}`);
+                    else if (point.y !== undefined) rows.push(`<b>${escapeHtml(label)}</b> · ${number(point.y)}`);
+                });
+                panel.innerHTML = `<strong>${title}</strong>${rows.map(row => `<span>${row}</span>`).join('')}`;
+                panel.style.display = 'flex';
+                const hideNative = () => plot.querySelectorAll('.hoverlayer')
+                    .forEach((node) => { node.style.visibility = 'hidden'; });
+                requestAnimationFrame(hideNative);
+                setTimeout(hideNative, 20);
+            };
+            const hide = () => { panel.style.display = 'none'; };
+            plot.on('plotly_hover', show);
+            plot.on('plotly_unhover', hide);
+            attached.set(plot, {show, hide, panel});
+        });
+    };
+
+    attach();
+    const rememberScroll = () => {
+        clearTimeout(scrollTimer);
+        scrollTimer = setTimeout(() => {
+            savedScroll = scroller?.scrollTop || 0;
+            sessionStorage.setItem('focus-chart-scroll-y', String(savedScroll));
+        }, 180);
+    };
+    const rememberWheelTarget = (event) => {
+        if (!scroller) return;
+        savedScroll = Math.max(
+            0,
+            Math.min(scroller.scrollHeight - scroller.clientHeight, scroller.scrollTop + event.deltaY)
+        );
+        sessionStorage.setItem('focus-chart-scroll-y', String(savedScroll));
+    };
+    scroller?.addEventListener('scroll', rememberScroll, {passive: true});
+    scroller?.addEventListener('wheel', rememberWheelTarget, {passive: true});
+    const observer = new MutationObserver(() => {
+        attach();
+        requestAnimationFrame(() => {
+            if (scroller && savedScroll > 0 && Math.abs(scroller.scrollTop - savedScroll) > 4) {
+                scroller.scrollTop = savedScroll;
+            }
+        });
+    });
+    observer.observe(document.body, {childList: true, subtree: true});
+    return () => {
+        observer.disconnect();
+        clearTimeout(scrollTimer);
+        scroller?.removeEventListener('scroll', rememberScroll);
+        scroller?.removeEventListener('wheel', rememberWheelTarget);
+        attached.forEach(({show, hide, panel}, plot) => {
+            if (typeof plot.removeListener === 'function') {
+                plot.removeListener('plotly_hover', show);
+                plot.removeListener('plotly_unhover', hide);
+            }
+            panel.remove();
+        });
+    };
+}
+"""
+_CHART_HOVER_PANEL = st.components.v2.component(
+    "focus_fixed_chart_hover",
+    html="<span></span>",
+    css=":host { display: none !important; }",
+    js=_CHART_HOVER_PANEL_JS,
+)
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_context_data() -> tuple[dict[str, pd.DataFrame], dict[str, str], str, str, str]:
@@ -151,9 +259,52 @@ def _cached_stock3_minute_history() -> pd.DataFrame:
     return Stock3LangSchwarzProvider().history(60)
 
 
+def _stock3_instrument(
+    name: str,
+    instrument_id: int,
+    isin: str,
+    cache_prefix: str,
+) -> Stock3Instrument:
+    return Stock3Instrument(name, instrument_id, isin, cache_prefix)
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def _cached_comparison_quote(
+    name: str,
+    instrument_id: int,
+    isin: str,
+    cache_prefix: str,
+) -> dict[str, object]:
+    instrument = _stock3_instrument(name, instrument_id, isin, cache_prefix)
+    return asdict(Stock3LangSchwarzProvider(instrument=instrument).quote())
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_comparison_minutes(
+    name: str,
+    instrument_id: int,
+    isin: str,
+    cache_prefix: str,
+) -> pd.DataFrame:
+    instrument = _stock3_instrument(name, instrument_id, isin, cache_prefix)
+    return Stock3LangSchwarzProvider(instrument=instrument).history(60)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_comparison_history(
+    name: str,
+    instrument_id: int,
+    isin: str,
+    cache_prefix: str,
+    resolution_seconds: int,
+) -> pd.DataFrame:
+    instrument = _stock3_instrument(name, instrument_id, isin, cache_prefix)
+    return Stock3LangSchwarzProvider(instrument=instrument).history(resolution_seconds)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_today_replay() -> dict[str, object]:
-    """Berechnet den v8-Tages-Replay nur auf ausdrücklichen Klick und cached das Ergebnis."""
+    """Berechnet den aktuellen Tages-Replay nur auf ausdrücklichen Klick und cached ihn."""
 
     provider = Stock3LangSchwarzProvider()
     result = replay_focus_day(
@@ -311,6 +462,160 @@ def _stock3_context_frames(fallback_frames: dict[str, pd.DataFrame]) -> dict[str
     return frames
 
 
+def _comparison_market_signal(
+    instrument: Stock3Instrument,
+) -> tuple[LiveQuote, pd.DataFrame, dict[str, pd.DataFrame], IntradaySignal]:
+    """Berechnet dieselbe Prognoselogik für eine weitere L&S-Aktie."""
+
+    arguments = (
+        instrument.name,
+        instrument.instrument_id,
+        instrument.isin,
+        instrument.cache_prefix,
+    )
+    quote = LiveQuote(**_cached_comparison_quote(*arguments))
+    minutes = _apply_live_quote(
+        _latest_trading_day(_cached_comparison_minutes(*arguments), quote),
+        quote,
+    )
+    if len(minutes) < 30:
+        raise ProviderError(f"Für {instrument.name} liegen zu wenige L&S-Minutenkerzen vor.")
+    five_minutes = _cached_comparison_history(*arguments, 300)
+    hourly = _cached_comparison_history(*arguments, 3600)
+    try:
+        daily = _cached_comparison_history(*arguments, 86400)
+    except ProviderError:
+        # Einzelne sehr lange stock3-Tagesreihen enthalten historische Corporate-Action-Brüche.
+        # Die geprüften L&S-Stundenkerzen liefern dafür eine robuste Tagesverdichtung.
+        daily = resample_ohlcv(hourly, "1D", drop_future_label=True)
+    frames = {
+        "1m": minutes,
+        "5m": five_minutes,
+        "15m": resample_intraday_candles(five_minutes, 15),
+        "1h": hourly,
+        "1d": daily,
+        "1wk": resample_ohlcv(daily, "W-FRI", drop_future_label=True),
+        "1mo": resample_ohlcv(daily, "ME", drop_future_label=True),
+    }
+    analyses, enriched, errors = analyze_timeframes(
+        frames,
+        allow_neutral_long_term_context=True,
+    )
+    if errors:
+        raise ProviderError("; ".join(errors.values()))
+    signal = build_market_signal(
+        analyses,
+        enriched,
+        now=datetime.now(UTC),
+        live_price=quote.bid,
+        session_close=time(23, 0),
+        spread_percent=quote.spread_percent,
+        order_imbalance=None,
+        require_volume_confirmation=False,
+        enforce_liquidity_filter=False,
+        external_context=ExternalMarketContext(),
+    )
+    return quote, minutes, frames, signal
+
+
+def _render_comparison_charts(
+    store: DataStore,
+    *,
+    period_label: str,
+    selected_minutes: int,
+    chart_style: str,
+    overlays: set[str],
+    forecast_horizon: int,
+) -> None:
+    """Zeigt weitere Aktien einzeln unter dem D-Wave-Chart."""
+
+    for instrument in COMPARISON_INSTRUMENTS:
+        try:
+            quote, minutes, frames, signal = _comparison_market_signal(instrument)
+            display_candles = select_display_candles(
+                frames,
+                minutes,
+                period=period_label,
+                interval_minutes=selected_minutes,
+            )
+        except (ProviderError, ValueError, KeyError) as exc:
+            st.warning(f"{instrument.name}: Chart momentan nicht verfügbar ({exc})")
+            continue
+        change = quote.change_percent or 0.0
+        color = "#58c981" if change >= 0 else "#e06469"
+        quality = forecast_quality_map(
+            store,
+            PAPER_STRATEGY_VERSION,
+            symbol=instrument.isin,
+        )
+        selected_quality = quality.get(forecast_horizon, {})
+        completed = int(selected_quality.get("total") or 0)
+        accuracy = selected_quality.get("raw_accuracy")
+        quality_label = (
+            f"{float(accuracy):.1f} % aus {completed} späteren Fällen"
+            if accuracy is not None
+            else "Live-Messung startet mit dem nächsten aktiven Bot-Zyklus"
+        )
+        historical_forecasts = store.focus_forecast_chart_points(
+            symbol=instrument.isin,
+            horizon_minutes=forecast_horizon,
+            start_at=pd.Timestamp(display_candles.index[0]).to_pydatetime(),
+            end_at=pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
+            model_version=PAPER_STRATEGY_VERSION,
+        )
+        st.markdown(
+            '<div class="comparison-header">'
+            f'<b>{escape(instrument.name)}</b><span>Lang &amp; Schwarz</span>'
+            f'<strong>{quote.bid:.3f} €</strong>'
+            f'<em style="color:{color}">{change:+.2f} %</em>'
+            f'<small>gleiche Prognoselogik · {escape(quality_label)}</small>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        comparison_overlays = {item for item in overlays if item in {"EMA", "Prognose", "Zonen"}}
+        comparison_overlays.add("Prognose")
+        figure = day_signal_chart(
+            display_candles,
+            quote,
+            signal,
+            FocusPosition(),
+            paper_order_events(
+                store,
+                current_paper_account(store).portfolio_id,
+                display_candles.index[-1],
+                symbol=instrument.isin,
+            ),
+            selected_minutes,
+            period_label=period_label,
+            data_is_resampled=True,
+            chart_style=chart_style,
+            overlays=comparison_overlays,
+            historical_forecasts=historical_forecasts,
+            forecast_horizon_minutes=forecast_horizon,
+            forecast_quality=quality,
+            instrument_name=instrument.name,
+            chart_height=420,
+            chart_identity=instrument.cache_prefix,
+        )
+        st.plotly_chart(
+            figure,
+            width="stretch",
+            config={
+                "displaylogo": False,
+                "displayModeBar": True,
+                "scrollZoom": False,
+                "responsive": True,
+                "modeBarButtonsToAdd": ["drawline", "drawrect", "eraseshape", "toggleSpikelines"],
+                "toImageButtonOptions": {
+                    "format": "png",
+                    "filename": f"{instrument.cache_prefix}-chart",
+                    "scale": 2,
+                },
+            },
+            key=f"comparison_{instrument.cache_prefix}_{period_label}_{selected_minutes}_{chart_style}",
+        )
+
+
 def _stored_position(store: DataStore):
     return next(
         (position for position in store.list_real_positions() if position.symbol in {"RQ0", "RQ0.F"}),
@@ -446,6 +751,15 @@ def _local_trade_time(value: datetime) -> datetime:
     return aware.astimezone(ZoneInfo("Europe/Berlin"))
 
 
+def _paper_asset_name(symbol: str) -> str:
+    if symbol == DWAVE_INSTRUMENT.exchange_symbol:
+        return "D-Wave Quantum"
+    return next(
+        (instrument.name for instrument in COMPARISON_INSTRUMENTS if instrument.isin == symbol),
+        symbol,
+    )
+
+
 @st.dialog("Bot-Position und Trades", width="large")
 def _render_trade_history_dialog(
     store: DataStore,
@@ -454,20 +768,23 @@ def _render_trade_history_dialog(
 ) -> None:
     orders = store.list_orders(account.portfolio_id, limit=200)
     trades = store.list_trades(account.portfolio_id)
-    open_buy = next((order for order in orders if order.side == "BUY"), None)
-    invested = (
-        open_buy.gross_value + open_buy.fees
-        if account.quantity > 0 and open_buy is not None
-        else (account.average_price or 0.0) * account.quantity
+    positions = store.list_positions(account.portfolio_id)
+    invested = sum(
+        position.average_price * position.quantity + position.entry_fees_remaining
+        for position in positions
     )
-    open_value = account.quantity * quote.bid
+    open_value = sum(
+        position.quantity
+        * (quote.bid if position.symbol == DWAVE_INSTRUMENT.exchange_symbol else position.current_price)
+        for position in positions
+    )
     open_result = open_value - invested
     open_color = "#58c981" if open_result >= 0 else "#e06469"
-    position_label = (
-        f"{account.quantity:.3f} Stück zu {account.average_price:.3f} €"
-        if account.quantity > 0 and account.average_price is not None
-        else "Der Bot ist aktuell nicht investiert"
-    )
+    position_label = "<br>".join(
+        f"{escape(_paper_asset_name(position.symbol))}: "
+        f"{position.quantity:.3f} Stück zu {position.average_price:.3f} €"
+        for position in positions
+    ) or "Der Bot ist aktuell nicht investiert"
     st.markdown(
         '<div class="trade-overview">'
         f'<span><small>STARTVERMÖGEN</small><b>{account.initial_capital:.2f} €</b></span>'
@@ -494,7 +811,7 @@ def _render_trade_history_dialog(
             st.markdown(
                 '<div class="trade-card">'
                 '<div class="trade-card-head">'
-                f'<b>Trade #{number}</b>'
+                f'<b>Trade #{number} · {escape(_paper_asset_name(trade.symbol))}</b>'
                 f'<strong style="color:{result_color}">{trade.pnl_eur:+.2f} € '
                 f'({trade.pnl_pct:+.2f} %)</strong>'
                 '</div><div class="trade-grid">'
@@ -523,7 +840,8 @@ def _render_trade_history_dialog(
             st.markdown(
                 '<div class="trade-card">'
                 '<div class="trade-card-head">'
-                f'<b style="color:{side_color}">{side_label}</b>'
+                f'<b style="color:{side_color}">{side_label} · '
+                f'{escape(_paper_asset_name(order.symbol))}</b>'
                 f'<span>{executed_at:%d.%m.%Y · %H:%M}</span>'
                 '</div><div class="trade-grid">'
                 f'<span><small>STÜCK</small><b>{order.quantity:.3f}</b></span>'
@@ -578,7 +896,9 @@ def _render_paper_account(
     signal_label = {"BUY": "KAUFEN", "SELL": "VERKAUFEN"}.get(signal.action, "WARTEN")
     position_text = (
         f"{account.quantity:.3f} Stk. @ {account.average_price:.3f} €"
-        if account.average_price is not None
+        if account.open_positions == 1 and account.average_price is not None
+        else f"{account.open_positions} offene Positionen"
+        if account.open_positions > 0
         else "keine Position"
     )
     st.markdown(
@@ -673,7 +993,11 @@ def _render_paper_account(
 def _validation_text(metrics: dict[str, float | int | None]) -> str:
     recorded = int(metrics["recorded"] or 0)
     completed = int(metrics["completed"] or 0)
-    label = "Bisherige Vorwärtsprüfung" if metrics.get("_legacy") else "Vorwärtsprüfung der Strategie v8"
+    label = (
+        "Bisherige Vorwärtsprüfung"
+        if metrics.get("_legacy")
+        else f"Vorwärtsprüfung der Strategie {PAPER_STRATEGY_VERSION.replace('focus-market-', '')}"
+    )
     if completed < 20:
         forecast_label = "Prognose" if recorded == 1 else "Prognosen"
         return (
@@ -794,7 +1118,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
     completed = int(summary["completed_trades"])
     costs = float(summary["transaction_costs"])
     confirmations = int(summary["confirmation_observations"])
-    note = "kein kostenbereinigtes v8-Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
+    note = "kein kostenbereinigtes Setup" if completed == 0 else f"{completed} abgeschlossene Trades"
     orders = summary.get("orders", ())
     order_labels: list[str] = []
     if isinstance(orders, (list, tuple)):
@@ -817,7 +1141,7 @@ def _render_replay_summary(summary: dict[str, object]) -> None:
         ):
             note += " · 17:55-Musterkerze als Live-Bestätigungsproxy"
     st.markdown(
-        '<div class="replay-summary-bar"><label>TAGES-REPLAY V7</label>'
+        '<div class="replay-summary-bar"><label>TAGES-REPLAY V9</label>'
         f'<b>{first_at:%H:%M}–{last_at:%H:%M}</b>'
         f'<strong style="color:{color}">{pnl:+.2f} € ({float(summary["pnl_percent"]):+.2f} %)</strong>'
         f'<span>Depot {float(summary["ending_equity"]):.2f} €</span>'
@@ -1020,7 +1344,7 @@ def _automatic_day_chart(store: DataStore) -> None:
         config={
             "displaylogo": False,
             "displayModeBar": True,
-            "scrollZoom": True,
+            "scrollZoom": False,
             "responsive": True,
             "modeBarButtonsToAdd": [
                 "drawline",
@@ -1035,5 +1359,36 @@ def _automatic_day_chart(store: DataStore) -> None:
     )
 
 
+@st.fragment(run_every=10)
+def _automatic_comparison_charts(store: DataStore) -> None:
+    period_label = str(st.session_state.get("dwave_chart_period", "Intraday"))
+    if period_label not in COMPACT_PERIOD_OPTIONS:
+        period_label = "Intraday"
+    interval_options = PERIOD_INTERVALS[period_label]
+    selected_minutes = int(
+        st.session_state.get(f"dwave_interval_{period_label}", DEFAULT_INTERVAL[period_label])
+    )
+    if selected_minutes not in interval_options:
+        selected_minutes = DEFAULT_INTERVAL[period_label]
+    chart_style = str(st.session_state.get("dwave_chart_style", "Kerzen"))
+    overlays = set(
+        st.session_state.get(
+            "dwave_chart_overlays",
+            ("Prognose", "Zonen", "Signale", "Position"),
+        )
+    )
+    forecast_horizon = int(st.session_state.get("dwave_forecast_horizon", 60))
+    _render_comparison_charts(
+        store,
+        period_label=period_label,
+        selected_minutes=selected_minutes,
+        chart_style=chart_style,
+        overlays=overlays,
+        forecast_horizon=forecast_horizon,
+    )
+
+
 def focus_page(store: DataStore) -> None:
     _automatic_day_chart(store)
+    _automatic_comparison_charts(store)
+    _CHART_HOVER_PANEL(key="focus_fixed_hover_panel", width="content")

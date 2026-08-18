@@ -8,6 +8,7 @@ import pandas as pd
 from src.focus.analysis import IntradaySignal
 from src.focus.paper import PAPER_PORTFOLIO_NAME, current_paper_account
 from src.focus.quote import LiveQuote
+from src.focus.stock3 import Stock3Instrument
 from src.focus.worker import FocusPaperWorker, _latest_trading_day, session_is_active
 
 
@@ -168,3 +169,29 @@ def test_worker_does_not_load_market_data_or_trade_when_bot_is_disabled(store):
     assert status is not None
     assert status.run_state == "DISABLED"
     assert "ausgeschaltet" in status.message
+
+
+def test_worker_can_paper_trade_dwave_and_a_comparison_asset(store, monkeypatch):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    spacex = Stock3Instrument("SpaceX", 96904496, "US84615Q1031", "spacex")
+    monkeypatch.setattr("src.focus.worker.COMPARISON_INSTRUMENTS", (spacex,))
+    monkeypatch.setattr("src.focus.worker.COMPARISON_POLL_SECONDS", 0)
+    monkeypatch.setattr("src.focus.worker.build_market_signal", lambda *_args, **_kwargs: _buy_signal())
+    worker = FocusPaperWorker(
+        store,
+        provider=FakeStock3Provider(now),
+        comparison_provider_factory=lambda _instrument: FakeStock3Provider(now),
+        clock=lambda: now,
+    )
+
+    worker.run_once()
+    cycle = worker.run_once()
+
+    assert cycle is not None
+    positions = store.list_positions(cycle.account.portfolio_id)
+    assert {position.symbol for position in positions} == {"RQ0", spacex.isin}
+    assert cycle.account.open_positions == 2
+    assert {order.symbol for order in store.list_orders(cycle.account.portfolio_id)} == {
+        "RQ0",
+        spacex.isin,
+    }

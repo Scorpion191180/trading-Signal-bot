@@ -6,7 +6,27 @@ from pathlib import Path
 
 import pytest
 
-from src.focus.stock3 import Stock3LangSchwarzProvider, decode_stock3_candles, parse_stock3_quote
+from src.focus.stock3 import (
+    COMPARISON_INSTRUMENTS,
+    Stock3Instrument,
+    Stock3LangSchwarzProvider,
+    decode_stock3_candles,
+    parse_stock3_quote,
+)
+
+
+def test_comparison_instruments_start_with_spacex_and_intuitive_machines():
+    assert [instrument.name for instrument in COMPARISON_INSTRUMENTS] == [
+        "SpaceX",
+        "Intuitive Machines",
+        "Apple",
+        "Nvidia",
+        "IonQ",
+    ]
+    assert COMPARISON_INSTRUMENTS[0].instrument_id == 96904496
+    assert COMPARISON_INSTRUMENTS[0].isin == "US84615Q1031"
+    assert COMPARISON_INSTRUMENTS[1].instrument_id == 52599841
+    assert COMPARISON_INSTRUMENTS[1].isin == "US46125A1007"
 
 
 class _Response:
@@ -123,6 +143,29 @@ def test_stock3_provider_requests_bid_history_from_lang_schwarz():
 
     assert len(provider.history(60, quote_type="ask")) == 3
     assert "qs=ask" in requested_urls[2]
+
+
+def test_stock3_provider_supports_other_instruments_and_separate_cache(tmp_path: Path):
+    requested_urls: list[str] = []
+
+    def opener(request, **_kwargs):
+        requested_urls.append(request.full_url)
+        payload = _quote_payload() if "/instrument/" in request.full_url else _history_payload()
+        return _Response(payload)
+
+    apple = Stock3Instrument("Apple", 121472, "US0378331005", "apple")
+    provider = Stock3LangSchwarzProvider(
+        opener=opener,
+        cache_directory=tmp_path,
+        instrument=apple,
+    )
+
+    assert provider.quote().isin == apple.isin
+    provider.history(300)
+
+    assert "/instrument/121472" in requested_urls[0]
+    assert "iid=121472" in requested_urls[1]
+    assert (tmp_path / "apple_ls_bid_300.csv").is_file()
 
 
 def test_stock3_history_falls_back_to_validated_local_cache(tmp_path: Path):
