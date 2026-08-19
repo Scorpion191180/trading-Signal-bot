@@ -187,6 +187,32 @@ def test_stock3_history_falls_back_to_validated_local_cache(tmp_path: Path):
     assert "lokaler Cache" in cached.attrs["provider"]
 
 
+def test_stock3_quote_falls_back_to_timestamped_local_cache(tmp_path: Path):
+    fetched_at = datetime(2026, 8, 19, 5, 30, tzinfo=UTC)
+    online = Stock3LangSchwarzProvider(
+        opener=lambda *_args, **_kwargs: _Response(_quote_payload()),
+        cache_directory=tmp_path,
+        clock=lambda: fetched_at,
+    )
+    expected = online.quote()
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("offline")
+
+    offline = Stock3LangSchwarzProvider(
+        opener=unavailable,
+        cache_directory=tmp_path,
+        clock=lambda: fetched_at.replace(minute=35),
+    )
+    cached = offline.quote()
+
+    assert cached.bid == expected.bid
+    assert cached.ask == expected.ask
+    assert cached.fetched_at == fetched_at
+    assert cached.quoted_at == expected.quoted_at
+    assert "lokaler Cache" in cached.provider
+
+
 def test_week_defaults_to_thirty_minute_candles():
     from src.focus.display import DEFAULT_INTERVAL, PERIOD_INTERVALS
 

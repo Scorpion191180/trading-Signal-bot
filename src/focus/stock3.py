@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import ssl
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -229,6 +229,45 @@ class Stock3LangSchwarzProvider:
             f"{self.instrument.cache_prefix}_ls_{quote_type}_{resolution_seconds}.csv"
         )
 
+    def _quote_cache_path(self) -> Path | None:
+        if self._cache_directory is None:
+            return None
+        return self._cache_directory / f"{self.instrument.cache_prefix}_ls_quote.json"
+
+    def _write_quote_cache(self, payload: dict[str, Any], fetched_at: datetime) -> None:
+        path = self._quote_cache_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "fetched_at": fetched_at.astimezone(UTC).isoformat(),
+                        "payload": payload,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        except (OSError, TypeError, ValueError):
+            return
+
+    def _read_quote_cache(self) -> tuple[dict[str, Any], datetime] | None:
+        path = self._quote_cache_path()
+        if path is None or not path.is_file():
+            return None
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            payload = document["payload"]
+            fetched_at = datetime.fromisoformat(str(document["fetched_at"]))
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict) or fetched_at.tzinfo is None:
+            return None
+        return payload, fetched_at.astimezone(UTC)
+
     def _write_history_cache(
         self,
         frame: pd.DataFrame,
@@ -297,13 +336,26 @@ class Stock3LangSchwarzProvider:
         )
         quote_endpoint = f"https://api.stock3.com/instrument/{self.instrument.instrument_id}"
         url = f"{quote_endpoint}?{urlencode({'client_id': 'stock3', 'select': select})}"
-        payload = self._read_json(url, label="Der öffentliche stock3-L&S-Kurs")
-        return parse_stock3_quote(
+        fetched_at = self._clock()
+        cached = False
+        try:
+            payload = self._read_json(url, label="Der öffentliche stock3-L&S-Kurs")
+        except ProviderError:
+            cached_quote = self._read_quote_cache()
+            if cached_quote is None:
+                raise
+            payload, fetched_at = cached_quote
+            cached = True
+        quote = parse_stock3_quote(
             payload,
-            fetched_at=self._clock(),
+            fetched_at=fetched_at,
             isin=self.instrument.isin,
             instrument_name=self.instrument.name,
         )
+        if cached:
+            return replace(quote, provider=f"{quote.provider} · lokaler Cache")
+        self._write_quote_cache(payload, fetched_at)
+        return quote
 
     def history(self, resolution_seconds: int, *, quote_type: str = "bid") -> pd.DataFrame:
         if resolution_seconds not in SUPPORTED_RESOLUTIONS:
