@@ -11,6 +11,8 @@ import pandas as pd
 
 from src.analysis.indicators import atr, ema, rsi
 
+from .patterns import CandlePattern, candlestick_pattern_score, latest_candlestick_patterns
+
 
 @dataclass(frozen=True)
 class Instrument:
@@ -58,6 +60,7 @@ NEW_YORK = ZoneInfo("America/New_York")
 US_OPENING_REVERSAL_EVENT = "US-Eröffnung: Abverkauf und Rückeroberung des vorherigen Tiefs"
 MICROTREND_CONTINUATION_EVENT = "Mikrotrend: steigende grüne Kerzen und lokaler Ausbruch"
 PROFIT_EXHAUSTION_EVENT = "Gewinnmitnahme: überkaufter Mikrotrend verliert Schwung"
+CANDLE_PATTERN_EVENT_PREFIX = "Kerzenmuster:"
 ADAPTIVE_HOLDING_PERIOD = "adaptiv · meist 5–30 Minuten, maximal 120 Minuten"
 
 
@@ -128,6 +131,7 @@ class IntradaySignal:
     external_context_score: float = 50.0
     external_context_reasons: tuple[str, ...] = ()
     latest_news: tuple[str, ...] = ()
+    detected_patterns: tuple[CandlePattern, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,6 +159,7 @@ class StrategyEnsemble:
     positive_votes: int
     negative_votes: int
     horizons: tuple[TrendForecast, ...]
+    patterns: tuple[CandlePattern, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -944,6 +949,17 @@ def build_strategy_ensemble(
     )
     structure_score = _market_structure_strategy(enriched)
     ott_ut_score = _ott_ut_strategy(enriched)
+    patterns = tuple(
+        sorted(
+            {
+                (item.name, item.direction, item.timestamp): item
+                for key in ("1m", "5m")
+                for item in latest_candlestick_patterns(enriched[key], recent_bars=3)
+            }.values(),
+            key=lambda item: (pd.Timestamp(item.timestamp), item.confidence),
+        )
+    )
+    pattern_score = candlestick_pattern_score(patterns)
 
     five_minute = enriched["5m"]
     latest_five = five_minute.iloc[-1]
@@ -959,35 +975,38 @@ def build_strategy_ensemble(
     if aligned_trend and ema_separation >= 0.10:
         regime = "Trend"
         weights = {
-            "Trend": 0.22,
-            "Momentum": 0.18,
-            "Ausbruch": 0.12,
+            "Trend": 0.19,
+            "Momentum": 0.15,
+            "Ausbruch": 0.10,
             "Rücklauf": 0.02,
-            "Kontext": 0.08,
-            "Marktstruktur": 0.18,
-            "OTT/UT": 0.20,
+            "Kontext": 0.07,
+            "Marktstruktur": 0.16,
+            "OTT/UT": 0.17,
+            "Kerzenmuster": 0.14,
         }
     elif recent_range >= 0.04:
         regime = "hohe Volatilität"
         weights = {
-            "Trend": 0.18,
-            "Momentum": 0.14,
-            "Ausbruch": 0.14,
-            "Rücklauf": 0.12,
-            "Kontext": 0.12,
-            "Marktstruktur": 0.14,
-            "OTT/UT": 0.16,
+            "Trend": 0.16,
+            "Momentum": 0.12,
+            "Ausbruch": 0.12,
+            "Rücklauf": 0.10,
+            "Kontext": 0.10,
+            "Marktstruktur": 0.12,
+            "OTT/UT": 0.14,
+            "Kerzenmuster": 0.14,
         }
     else:
         regime = "Seitwärts"
         weights = {
-            "Trend": 0.10,
-            "Momentum": 0.10,
-            "Ausbruch": 0.08,
-            "Rücklauf": 0.30,
-            "Kontext": 0.12,
-            "Marktstruktur": 0.14,
-            "OTT/UT": 0.16,
+            "Trend": 0.09,
+            "Momentum": 0.08,
+            "Ausbruch": 0.07,
+            "Rücklauf": 0.25,
+            "Kontext": 0.10,
+            "Marktstruktur": 0.13,
+            "OTT/UT": 0.14,
+            "Kerzenmuster": 0.14,
         }
 
     strategy_scores = {
@@ -998,6 +1017,7 @@ def build_strategy_ensemble(
         "Kontext": context_score,
         "Marktstruktur": structure_score,
         "OTT/UT": ott_ut_score,
+        "Kerzenmuster": pattern_score,
     }
     score = sum(strategy_scores[name] * weight for name, weight in weights.items())
     if order_imbalance is not None and np.isfinite(order_imbalance):
@@ -1046,6 +1066,7 @@ def build_strategy_ensemble(
         positive_votes=sum(value >= 58 for value in strategy_scores.values()),
         negative_votes=sum(value <= 42 for value in strategy_scores.values()),
         horizons=horizons,
+        patterns=patterns,
     )
 
 
@@ -1191,7 +1212,7 @@ def build_intraday_signal(
         float(latest_five["linreg_slope"]) > 0,
         float(latest_fifteen["close"]) > float(latest_fifteen["ut_stop"]),
     )
-    confirmed_trend = sum(trend_confirmation_votes) >= 4
+    confirmed_trend = sum(trend_confirmation_votes) >= 3
     not_chasing = (
         float(latest_five["close"]) - float(latest_five["ema_fast"])
         <= max(five_atr * 1.2, price * 0.002)
@@ -1200,6 +1221,16 @@ def build_intraday_signal(
     opening_reversal = _us_opening_reversal(enriched["1m"], current_time, spread_percent)
     microtrend = _microtrend_continuation(enriched["1m"], spread_percent)
     profit_exhaustion = _profit_exhaustion(enriched["1m"])
+    bullish_pattern = max(
+        (item for item in forecast.patterns if item.direction == "BULLISH"),
+        key=lambda item: item.confidence,
+        default=None,
+    )
+    bearish_pattern = max(
+        (item for item in forecast.patterns if item.direction == "BEARISH"),
+        key=lambda item: item.confidence,
+        default=None,
+    )
     opening_context_ok = analyses["1h"].score >= 25 and analyses["1d"].score >= 25
     opening_trigger = (
         opening_reversal.active
@@ -1222,6 +1253,30 @@ def build_intraday_signal(
         and not liquidity_veto
         and not external_risk_veto
     )
+    pattern_context_ok = (
+        bullish_pattern is not None
+        and bullish_pattern.confidence >= 68
+        and analyses["1m"].score >= 52
+        and analyses["5m"].score >= 50
+        and analyses["15m"].score >= 45
+        and forecast.score >= 57
+        and forecast.horizons[0].direction == "STEIGEND"
+        and forecast.horizons[1].direction != "FALLEND"
+    )
+    pattern_levels_valid = bool(
+        bullish_pattern is not None
+        and bullish_pattern.stop_loss is not None
+        and bullish_pattern.target is not None
+        and bullish_pattern.stop_loss < price < bullish_pattern.target
+    )
+    pattern_trigger = (
+        pattern_context_ok
+        and pattern_levels_valid
+        and not_chasing
+        and not smart_money.bearish_reversal
+        and not liquidity_veto
+        and not external_risk_veto
+    )
     if opening_trigger and opening_reversal.stop_loss is not None and opening_reversal.target is not None:
         stop_loss = opening_reversal.stop_loss
         target = opening_reversal.target
@@ -1232,19 +1287,26 @@ def build_intraday_signal(
         target = microtrend.target
         entry_low = price - 0.05 * one_minute_atr
         entry_high = price + 0.10 * one_minute_atr
+    elif pattern_trigger and bullish_pattern is not None:
+        stop_loss = float(bullish_pattern.stop_loss)
+        risk_distance = price - stop_loss
+        target = max(float(bullish_pattern.target), price + risk_distance * 1.8)
+        entry_low = price - 0.08 * one_minute_atr
+        entry_high = price + 0.12 * one_minute_atr
     setup_confirmation = (
         analyses["1m"].setup in {"Ausbruch", "Trend-Rücksetzer"}
         or smart_money.bullish_reversal
         or smart_money.demand_retest
+        or pattern_context_ok
     )
     short_trigger = (
-        analyses["1m"].score >= 62
-        and analyses["5m"].score >= 62
-        and analyses["15m"].score >= 52
+        analyses["1m"].score >= 58
+        and analyses["5m"].score >= 58
+        and analyses["15m"].score >= 48
         and analyses["1m"].rsi <= 73
         and setup_confirmation
         and short_volume
-        and forecast.positive_votes >= 5
+        and forecast.positive_votes >= 4
         and forecast.horizons[0].direction == "STEIGEND"
         and forecast.horizons[1].direction != "FALLEND"
         and confirmed_trend
@@ -1253,8 +1315,16 @@ def build_intraday_signal(
         and not liquidity_veto
         and not external_risk_veto
     )
-    context_veto = analyses["1h"].score < 38 or analyses["1d"].score < 35
-    bearish_exit = analyses["1m"].score <= 38 and analyses["5m"].score <= 42
+    context_veto = analyses["1h"].score < 34 or analyses["1d"].score < 32
+    bearish_pattern_exit = bool(
+        bearish_pattern is not None
+        and bearish_pattern.confidence >= 72
+        and score <= 52
+        and forecast.horizons[0].direction == "FALLEND"
+    )
+    bearish_exit = (
+        analyses["1m"].score <= 38 and analyses["5m"].score <= 42
+    ) or bearish_pattern_exit
     reasons = (
         (
             "Markt/Nachrichten: " + " · ".join(external_context.reasons)
@@ -1271,6 +1341,15 @@ def build_intraday_signal(
             "Mikrotrend bestätigt: vier grüne Kerzen · steigende Tiefs · lokales Hoch gebrochen"
             if microtrend.active
             else "Mikrotrend: keine bestätigte Kerzentreppe mit Ausbruch"
+        ),
+        (
+            "Kerzenmuster: "
+            + " · ".join(
+                f"{item.name} {item.direction.lower()} ({item.confidence:.0f} %)"
+                for item in forecast.patterns[-3:]
+            )
+            if forecast.patterns
+            else "Kerzenmuster: aktuell kein kontextbestätigtes Muster"
         ),
         f"Marktphase {forecast.regime}: " + " · ".join(forecast.votes),
         f"1 Minute {analyses['1m'].score:.0f} · 5 Minuten {analyses['5m'].score:.0f} · "
@@ -1309,10 +1388,18 @@ def build_intraday_signal(
             else:
                 action, headline, color = "HOLD", "HALTEN – US-Eröffnungs-Reversal bestätigt", "#38bdf8"
                 warning = "Das Reversal spricht gegen einen Verkauf am Tief, aber nicht für Verbilligen."
+        elif pattern_trigger and bullish_pattern is not None:
+            if position.average_price is not None and price >= position.average_price:
+                action, headline, color = "ADD", f"NACHKAUFEN – {bullish_pattern.name} bestätigt", "#22c55e"
+                warning = "Kerzenmuster, Trend und Kurszone bestätigen sich; Stop und Kostenhürde bleiben verbindlich."
+            else:
+                action, headline, color = "HOLD", f"HALTEN – {bullish_pattern.name} erkannt", "#38bdf8"
+                warning = "Bullisches Muster erkannt, aber keine Verlustposition verbilligen."
         elif bearish_exit or score <= 38:
-            action, headline, color = "SELL", "VERKAUFEN – kurzfristiger Trend kippt", "#ef4444"
+            pattern_suffix = f" · {bearish_pattern.name}" if bearish_pattern_exit and bearish_pattern else ""
+            action, headline, color = "SELL", f"VERKAUFEN – kurzfristiger Trend kippt{pattern_suffix}", "#ef4444"
             warning = "Signal bezieht sich auf den kurzfristigen Trade; Ausführung und Spread selbst prüfen."
-        elif short_trigger and not context_veto and score >= 64:
+        elif short_trigger and not context_veto and score >= 60:
             if position.average_price is not None and price >= position.average_price:
                 action, headline, color = "ADD", "NACHKAUFEN – erneute Intraday-Bestätigung", "#22c55e"
                 warning = "Nicht verbilligen: Das Nachkaufsignal gilt nur oberhalb deines Einstandskurses."
@@ -1328,7 +1415,10 @@ def build_intraday_signal(
     elif microtrend_trigger:
         action, headline, color = "BUY", "KAUFEN – bullischer Mikrotrend bestätigt", "#22c55e"
         warning = "Frühes Fortsetzungssetup; steigende Kerzen allein reichen ohne Ausbruch nicht aus."
-    elif short_trigger and not context_veto and score >= 64:
+    elif pattern_trigger and bullish_pattern is not None:
+        action, headline, color = "BUY", f"KAUFEN – {bullish_pattern.name} bestätigt", "#22c55e"
+        warning = "Das Muster gilt nur mit dem eingezeichneten Stop; Ziel und Kostenhürde werden vor Ausführung geprüft."
+    elif short_trigger and not context_veto and score >= 60:
         action, headline, color = "BUY", "KAUFEN – kurzfristiges technisches Signal", "#22c55e"
         warning = "Adaptiv halten; bei Stop oder bestätigtem Trendbruch ist das Setup ungültig."
         if wide_spread:
@@ -1364,15 +1454,20 @@ def build_intraday_signal(
         structure_event=(
             PROFIT_EXHAUSTION_EVENT
             if action == "SELL" and profit_exhaustion
+            else f"{CANDLE_PATTERN_EVENT_PREFIX} {bearish_pattern.name}"
+            if action == "SELL" and bearish_pattern_exit and bearish_pattern is not None
             else opening_reversal.event
             if opening_reversal.active
             else microtrend.event
             if microtrend.active
+            else f"{CANDLE_PATTERN_EVENT_PREFIX} {bullish_pattern.name}"
+            if pattern_trigger and bullish_pattern is not None
             else smart_money.event
         ),
         external_context_score=external_context.score if external_context is not None else 50.0,
         external_context_reasons=external_context.reasons if external_context is not None else (),
         latest_news=external_context.headlines if external_context is not None else (),
+        detected_patterns=forecast.patterns,
     )
 
 

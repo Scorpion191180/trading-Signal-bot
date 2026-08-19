@@ -268,7 +268,7 @@ def _stock3_instrument(
     return Stock3Instrument(name, instrument_id, isin, cache_prefix)
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def _cached_comparison_quote(
     name: str,
     instrument_id: int,
@@ -279,7 +279,7 @@ def _cached_comparison_quote(
     return asdict(Stock3LangSchwarzProvider(instrument=instrument).quote())
 
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def _cached_comparison_minutes(
     name: str,
     instrument_id: int,
@@ -600,8 +600,10 @@ def _render_comparison_charts(
             '</div>',
             unsafe_allow_html=True,
         )
-        comparison_overlays = {item for item in overlays if item in {"EMA", "Prognose", "Zonen"}}
-        comparison_overlays.add("Prognose")
+        comparison_overlays = {
+            item for item in overlays if item in {"EMA", "Prognose", "Zonen", "Signale"}
+        }
+        comparison_overlays.update(("Prognose", "Signale"))
         figure = day_signal_chart(
             display_candles,
             quote,
@@ -622,7 +624,7 @@ def _render_comparison_charts(
             forecast_horizon_minutes=forecast_horizon,
             forecast_quality=quality,
             instrument_name=instrument.name,
-            chart_height=420,
+            chart_height=390,
             chart_identity=instrument.cache_prefix,
         )
         st.plotly_chart(
@@ -1387,7 +1389,7 @@ def _automatic_day_chart(store: DataStore) -> None:
     )
 
 
-@st.fragment(run_every=10)
+@st.fragment(run_every=30)
 def _automatic_comparison_charts(store: DataStore) -> None:
     period_label = str(st.session_state.get("dwave_chart_period", "Intraday"))
     if period_label not in COMPACT_PERIOD_OPTIONS:

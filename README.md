@@ -1,6 +1,6 @@
 # D-Wave Tageschart mit Kurzfrist-Signalen
 
-Eine bewusst reduzierte Streamlit-App für genau ein Instrument:
+Eine bewusst reduzierte Streamlit-App mit D-Wave als Hauptinstrument und fünf darunterliegenden Vergleichscharts:
 
 - **D-Wave Quantum Inc.**
 - deutsches Börsenkürzel **RQ0**
@@ -18,6 +18,8 @@ Die sichtbare Oberfläche besteht im Wesentlichen nur aus einem automatisch aktu
 - das aktuelle Signal direkt im Chart,
 - bei einer gespeicherten Position der Einstandskurs und der ungefähre Gewinn oder Verlust,
 - Stop und technisches Ziel, wenn die aktuelle Handlung diese Marken benötigt,
+- kontextbestätigte Kerzenmuster als grüne oder rote Pfeile,
+- bei einem aktiven Kauf-/Halten-Setup einen grünen Ziel- und roten Risikokasten,
 - persistente Kaufen- und Verkaufen-Markierungen der tatsächlich vorwärts ausgeführten Papierorders.
 
 Die Bedienung orientiert sich an der fotografierten professionellen Chartansicht: oben stehen Marktüberblick, Instrument, Handelsplatz und Livekurs; im Chart stehen OHLC-Werte und das aktuelle Kurzfristsignal; Kurs und Preisachse liegen rechts. Eine schmale Leiste über dem Chart wechselt zwischen **Heute, 1 Woche, 1/3/6 Monaten, Seit Jahresanfang, 1/3/5/10 Jahren und der gesamten Historie**. Daneben wählt ein kompaktes Menü die Kerzengröße; Linienansicht und Einblendungen liegen platzsparend unter **Mehr**. Je nach Zeitraum bietet die App nur sinnvolle echte Kerzenebenen von **1 Minute bis 1 Monat** an. Sie erzeugt keine vermeintlichen Minutenkurse aus Tagesdaten.
@@ -34,7 +36,7 @@ Für Positionswert und Plus/Minus verwendet die App den **L&S-Geldkurs**, weil d
 
 Die sichtbaren Kerzen werden aus echten Open-, High-, Low- und Close-Werten des gewählten Zeitraums gebaut. Der Körper reicht von Eröffnung bis Schluss; die Dochte reichen bis zum höchsten und niedrigsten tatsächlich beobachteten Kurs. Eine Kerze kann deshalb bei einem echten Doji oder einem Intervall ohne zusätzliche Preisspanne naturgemäß sehr schmal sein.
 
-Die D-Wave-Anzeige wird bei geöffneter App automatisch jede Sekunde, die darunterliegenden Vergleichscharts ressourcenschonend alle zehn Sekunden neu geladen. Die eigentliche Signallogik und das Papierkonto laufen als eigener macOS-Hintergrunddienst auch dann weiter, wenn Browser und Streamlit-App geschlossen sind. Die primäre L&S-Sitzung läuft werktags von 07:30 bis 23:00 Uhr. Danach bleibt der Dienst aktiv, pausiert aber die Kursanalyse bis zur nächsten Sitzung.
+Die D-Wave-Anzeige wird bei geöffneter App automatisch jede Sekunde, die darunterliegenden Vergleichscharts ressourcenschonend alle 30 Sekunden neu geladen. Die eigentliche Signallogik und das Papierkonto laufen als eigener macOS-Hintergrunddienst auch dann weiter, wenn Browser und Streamlit-App geschlossen sind. Die primäre L&S-Sitzung läuft werktags von 07:30 bis 23:00 Uhr. Danach bleibt der Dienst aktiv, pausiert aber die Kursanalyse bis zur nächsten Sitzung.
 
 ## Private Position und unabhängiger Signal-Bot
 
@@ -59,13 +61,14 @@ Die kurzfristige Prognose kombiniert mehrere Ansätze, statt sich auf einen einz
 - **Momentum:** RSI und Veränderung des MACD-Histogramms,
 - **Ausbruch:** Lage in der jüngsten Handelsspanne und Volumenbestätigung,
 - **Rücklauf:** Abstand zum 20-Kerzen-Mittelwert in einer Seitwärtsphase,
+- **Kerzenmuster:** Engulfing, Hammer, Morning/Evening Star, Piercing/Dark Cloud, Harami, Tweezer, Three Soldiers/Crows und bestätigte Inside-Bar-Ausbrüche,
 - **Kontext:** Stunde, Tag, Woche und Monat als Filter gegen Trades in einen starken Gegentrend.
 - **Marktreaktion:** D-Wave an der US-Börse, Quantum-Vergleichsaktien, Nasdaq, S&P 500, Halbleiter, VIX, Gold und EUR/USD.
 - **Nachrichten:** zeitgewichtete Meldungen zu D-Wave, Quantum-Aktien und US-Märkten mit konservativer Schlagzeilenbewertung.
 
 Die Gewichtung wechselt zwischen Trend-, Seitwärts- und hoher Volatilitätsphase. Markt und Nachrichten dürfen den technischen Score nur begrenzt verändern und niemals allein einen Kauf auslösen. Ein außergewöhnlich negativer externer Kontext kann dagegen einen Einstieg blockieren. Fällt eine Zusatzquelle aus, wird sie neutral behandelt. Der laufende Geld-/Brief-Spread und – sofern vorhanden – das Verhältnis der angebotenen Stückzahlen wirken als Liquiditätsfilter. Ab 0,6 Prozent Spread wird ein Kaufsignal zwar weiterhin als technisches Testsignal angezeigt, aber nicht im Papierkonto ausgeführt. Die angezeigte Zone ist ein ATR-basierter technischer Schwankungsbereich und keine Kursgarantie. Der Modellwert von 0 bis 100 ist ausdrücklich **keine kalibrierte Trefferwahrscheinlichkeit**; seine Qualität muss mit künftigen echten Signalen weiter außerhalb der Entwicklungsdaten geprüft werden.
 
-Seit Modellversion 9 wird jeder Horizont von 5 bis 120 Minuten getrennt geschätzt. Jede Prognose ist sofort als cyanfarbene Linie sichtbar; 75 Prozent sind das angestrebte, später gemessene Trefferziel und keine Anzeigeschwelle. Bewegungen unter 0,15 Prozent werden bei Erstellung und späterer Bewertung einheitlich als Seitwärts/Marktrauschen behandelt. Die jüngste 1-/5-/15-Minuten-Preisbewegung erhält bei kurzen Horizonten mehr Gewicht als nachlaufende EMA-, OTT- und MACD-Werte; bei widersprüchlichen Komponenten sinkt die angezeigte Modellstärke. Die sichtbare Prognoselinie verbindet den aktuellen L&S-Bid mit allen Zielpunkten, und der Chartbereich schließt Kerzen, Prognosepunkte und Unsicherheitszonen vollständig ein.
+Seit Modellversion 10 wird jeder Horizont von 5 bis 120 Minuten getrennt geschätzt und die Kerzenmuster werden als achte Ensemble-Komponente bewertet. Ein Muster darf den Bot nur dann früher aktivieren, wenn die Bestätigungskerze geschlossen ist und Trend, Kurszone sowie kurzfristige Prognose nicht widersprechen. Jede Prognose ist sofort als cyanfarbene Linie sichtbar; 75 Prozent sind das angestrebte, später gemessene Trefferziel und keine Anzeigeschwelle. Bewegungen unter 0,15 Prozent werden bei Erstellung und späterer Bewertung einheitlich als Seitwärts/Marktrauschen behandelt. Die jüngste 1-/5-/15-Minuten-Preisbewegung erhält bei kurzen Horizonten mehr Gewicht als nachlaufende EMA-, OTT- und MACD-Werte; bei widersprüchlichen Komponenten sinkt die angezeigte Modellstärke. Die sichtbare Prognoselinie verbindet den aktuellen L&S-Bid mit allen Zielpunkten, und der Chartbereich schließt Kerzen, Prognosepunkte und Unsicherheitszonen vollständig ein.
 
 ## Echte Vorwärtsprüfung
 
@@ -81,7 +84,7 @@ Obwohl jede Aktie einen kompakten eigenen Chart erhält, prüft die App weiterhi
 - Stunde und Tag verhindern einen Trade gegen einen starken Gegentrend,
 - Woche und Monat dienen nur als Risiko- und Kontextfilter.
 
-Verwendet werden EMA-Trend, RSI 14, MACD-Histogramm, ATR und die 20-Kerzen-Struktur. Falls die Kursquelle echtes Volumen liefert, wird zusätzlich relatives Volumen verlangt. Die L&S-Bid-Quote-Historie enthält kein Handelsvolumen; dort übernehmen eine starke gemeinsame 1-/5-/15-Minuten-Preisbestätigung und mindestens drei positive Strategiestimmen diese Prüfung. Die längeren Ebenen und der aktuelle externe Kontext entscheiden nach 30 Minuten mit, ob ein profitabler Trend weiter gehalten werden darf. Stop, bestätigter Trendbruch und Gewinnerschöpfung haben jederzeit Vorrang.
+Verwendet werden EMA-Trend, RSI 14, MACD-Histogramm, ATR, die 20-Kerzen-Struktur und objektiv messbare Kerzenverhältnisse. Falls die Kursquelle echtes Volumen liefert, wird zusätzlich relatives Volumen verlangt. Die L&S-Bid-Quote-Historie enthält kein Handelsvolumen; dort übernehmen eine starke gemeinsame 1-/5-/15-Minuten-Preisbestätigung und mindestens vier positive Strategiestimmen diese Prüfung. Die längeren Ebenen und der aktuelle externe Kontext entscheiden nach 30 Minuten mit, ob ein profitabler Trend weiter gehalten werden darf. Stop, bestätigter Trendbruch und Gewinnerschöpfung haben jederzeit Vorrang.
 
 Methodisch berücksichtigt die Umsetzung sowohl die dokumentierte Trendfortsetzung als auch deren Grenzen und kurzfristige Rückläufe: [Time Series Momentum (Journal of Financial Economics)](https://www.sciencedirect.com/science/article/pii/S0304405X11002613), [Short-Horizon Return Reversals and the Bid-Ask Spread (Journal of Financial Intermediation)](https://www.sciencedirect.com/science/article/pii/S1042957385710066). Eine spätere echte Kalibrierung darf nur zeitlich vorwärts testen; zufällig gemischte Trainings- und Testdaten würden Informationen aus der Zukunft einschleusen. Dafür ist ein Walk-forward-Verfahren wie [TimeSeriesSplit](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) vorgesehen.
 
@@ -131,7 +134,7 @@ Historische Prognosepunkte für den jüngsten Handelstag lassen sich für alle a
 .venv/bin/python -m scripts.replay_focus_day --all-instruments --save-forecasts
 ```
 
-Der Replay schreibt ausschließlich als `v9-replay` gekennzeichnete Prognosen und Trefferbewertungen. Rückblickend erkannte Käufe oder Verkäufe bleiben in einem temporären Testdepot und werden niemals als echte Papierorders in das laufende Journal übernommen.
+Der Replay schreibt ausschließlich als `v10-replay` gekennzeichnete Prognosen und Trefferbewertungen. Rückblickend erkannte Käufe oder Verkäufe bleiben in einem temporären Testdepot und werden niemals als echte Papierorders in das laufende Journal übernommen.
 
 ## Tests
 

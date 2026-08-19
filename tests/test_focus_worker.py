@@ -134,7 +134,7 @@ def test_worker_executes_paper_order_and_persists_heartbeat(store, monkeypatch):
     first = worker.run_once()
     cycle = worker.run_once()
 
-    assert first is not None and first.account.state == "WARTET · BESTÄTIGUNG"
+    assert first is not None and first.account.state == "INVESTIERT"
     assert cycle is not None
     assert cycle.account.state == "INVESTIERT"
     portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
@@ -175,7 +175,8 @@ def test_worker_can_paper_trade_dwave_and_a_comparison_asset(store, monkeypatch)
     now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
     spacex = Stock3Instrument("SpaceX", 96904496, "US84615Q1031", "spacex")
     monkeypatch.setattr("src.focus.worker.COMPARISON_INSTRUMENTS", (spacex,))
-    monkeypatch.setattr("src.focus.worker.COMPARISON_POLL_SECONDS", 0)
+    monkeypatch.setattr("src.focus.worker.COMPARISON_POLL_SECONDS", 60)
+    monkeypatch.setattr("src.focus.worker.monotonic", lambda: 1_000.0)
     monkeypatch.setattr("src.focus.worker.build_market_signal", lambda *_args, **_kwargs: _buy_signal())
     worker = FocusPaperWorker(
         store,
@@ -195,3 +196,6 @@ def test_worker_can_paper_trade_dwave_and_a_comparison_asset(store, monkeypatch)
         "RQ0",
         spacex.isin,
     }
+    status = store.get_focus_bot_status()
+    assert status is not None
+    assert "1/1 weitere Aktien zuletzt geprüft" in status.message

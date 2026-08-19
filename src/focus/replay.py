@@ -13,6 +13,7 @@ from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
 
 from .analysis import (
+    CANDLE_PATTERN_EVENT_PREFIX,
     DWAVE_INSTRUMENT,
     MICROTREND_CONTINUATION_EVENT,
     US_OPENING_REVERSAL_EVENT,
@@ -20,7 +21,7 @@ from .analysis import (
     build_market_signal,
 )
 from .data import resample_ohlcv
-from .paper import PAPER_STARTING_CAPITAL, current_paper_account, run_paper_account
+from .paper import PAPER_STARTING_CAPITAL, PAPER_STRATEGY_VERSION, current_paper_account, run_paper_account
 from .quality import forecast_horizon_payloads, forecast_quality_map
 from .quote import LiveQuote, resample_intraday_candles
 from .worker import _completed_candles
@@ -138,9 +139,9 @@ def replay_focus_day(
     hourly: pd.DataFrame,
     daily: pd.DataFrame,
     selected_date: date | None = None,
-    confirmation_observations: int = 2,
+    confirmation_observations: int = 1,
     forecast_store: DataStore | None = None,
-    forecast_model_version: str = "focus-market-v9-replay",
+    forecast_model_version: str = f"{PAPER_STRATEGY_VERSION}-replay",
     forecast_symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
     forecast_isin: str = DWAVE_INSTRUMENT.isin,
     allow_neutral_context: bool = False,
@@ -275,8 +276,8 @@ def replay_focus_day(
             had_position = account.quantity > 0
             required_confirmations = (
                 1
-                if signal.structure_event
-                in {US_OPENING_REVERSAL_EVENT, MICROTREND_CONTINUATION_EVENT}
+                if signal.structure_event in {US_OPENING_REVERSAL_EVENT, MICROTREND_CONTINUATION_EVENT}
+                or signal.structure_event.startswith(CANDLE_PATTERN_EVENT_PREFIX)
                 else confirmation_observations
             )
             account = run_paper_account(

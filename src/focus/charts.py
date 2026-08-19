@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from .analysis import SPEC_BY_KEY, FocusPosition, IntradaySignal, TimeframeAnalysis
+from .patterns import scan_candlestick_patterns
 from .quote import LiveQuote, resample_intraday_candles
 
 CANDLE_INTERVAL_LABELS = {
@@ -347,6 +348,75 @@ def day_signal_chart(
                 annotation_text="Liquidität oben",
                 annotation_position="top left",
             )
+
+    chart_patterns = ()
+    if "Signale" in active_overlays:
+        chart_patterns = tuple(
+            item
+            for item in scan_candlestick_patterns(
+                visible,
+                lookback=180,
+                minimum_confidence=72,
+            )
+            if item.direction in {"BULLISH", "BEARISH"}
+        )[-8:]
+    for direction, label, color, symbol, text_position in (
+        ("BULLISH", "Bullisches Kerzenmuster", "#22c55e", "triangle-up", "bottom center"),
+        ("BEARISH", "Bärisches Kerzenmuster", "#ef4444", "triangle-down", "top center"),
+    ):
+        matching_patterns = [item for item in chart_patterns if item.direction == direction]
+        if not matching_patterns:
+            continue
+        figure.add_trace(
+            go.Scatter(
+                x=[pd.Timestamp(item.timestamp).tz_convert("Europe/Berlin") for item in matching_patterns],
+                y=[item.price for item in matching_patterns],
+                mode="markers",
+                name=label,
+                marker={
+                    "size": 12,
+                    "color": color,
+                    "symbol": symbol,
+                    "line": {"width": 1.2, "color": "#f8fafc"},
+                },
+                text=[
+                    f"<b>{item.name}</b><br>{item.context}<br>"
+                    f"Musterstärke {item.confidence:.0f} %"
+                    for item in matching_patterns
+                ],
+                hovertemplate="%{text}<extra></extra>",
+                textposition=text_position,
+            )
+        )
+
+    current_signal_styles = {
+        "BUY": ("KAUFEN", "#22c55e", "triangle-up"),
+        "ADD": ("NACHKAUFEN", "#14b8a6", "triangle-up"),
+        "HOLD": ("HALTEN", "#38bdf8", "diamond"),
+        "SELL": ("VERKAUFEN", "#ef4444", "triangle-down"),
+        "WAIT": ("WARTEN", "#f59e0b", "circle"),
+    }
+    if "Signale" in active_overlays and signal.action in current_signal_styles:
+        signal_label, signal_marker_color, signal_symbol = current_signal_styles[signal.action]
+        figure.add_trace(
+            go.Scatter(
+                x=[current_x],
+                y=[quote.bid],
+                mode="markers+text",
+                name="Aktuelles Botsignal",
+                text=[signal_label],
+                textposition="top center" if signal.action != "SELL" else "bottom center",
+                marker={
+                    "size": 16,
+                    "color": signal_marker_color,
+                    "symbol": signal_symbol,
+                    "line": {"width": 1.5, "color": "white"},
+                },
+                hovertext=[f"{signal.headline}<br>{signal.structure_event}"],
+                hovertemplate="%{hovertext}<extra></extra>",
+                showlegend=False,
+            )
+        )
         if signal.liquidity_low is not None:
             figure.add_hline(
                 y=signal.liquidity_low,
@@ -408,6 +478,71 @@ def day_signal_chart(
             annotation_text="Ziel",
             annotation_position="top right",
         )
+
+    risk_reward_bounds: list[float] = []
+    box_entry = float(signal.current_price)
+    valid_risk_box = bool(
+        period_label == "Intraday"
+        and "Signale" in active_overlays
+        and signal.action in {"BUY", "ADD", "HOLD"}
+        and signal.stop_loss is not None
+        and signal.target is not None
+        and signal.stop_loss < box_entry < signal.target
+    )
+    if valid_risk_box:
+        active_bullish_patterns = [
+            item for item in signal.detected_patterns if item.direction == "BULLISH"
+        ]
+        box_start = (
+            pd.Timestamp(active_bullish_patterns[-1].timestamp).tz_convert("Europe/Berlin")
+            if active_bullish_patterns
+            else current_x
+        )
+        box_start = max(box_start, pd.Timestamp(visible.index[0]))
+        box_end = _trading_minute_target(current_x, 30)
+        figure.add_shape(
+            type="rect",
+            xref="x",
+            yref="y",
+            x0=box_start,
+            x1=box_end,
+            y0=box_entry,
+            y1=float(signal.target),
+            fillcolor="rgba(34,197,94,.16)",
+            line={"color": "rgba(34,197,94,.80)", "width": 1.2},
+            layer="below",
+        )
+        figure.add_shape(
+            type="rect",
+            xref="x",
+            yref="y",
+            x0=box_start,
+            x1=box_end,
+            y0=float(signal.stop_loss),
+            y1=box_entry,
+            fillcolor="rgba(239,68,68,.16)",
+            line={"color": "rgba(239,68,68,.80)", "width": 1.2},
+            layer="below",
+        )
+        figure.add_annotation(
+            x=box_end,
+            y=float(signal.target),
+            text="Gewinnzone",
+            showarrow=False,
+            xanchor="right",
+            yanchor="bottom",
+            font={"size": 10, "color": "#86efac"},
+        )
+        figure.add_annotation(
+            x=box_end,
+            y=float(signal.stop_loss),
+            text="Risikozone",
+            showarrow=False,
+            xanchor="right",
+            yanchor="top",
+            font={"size": 10, "color": "#fca5a5"},
+        )
+        risk_reward_bounds.extend((float(signal.stop_loss), float(signal.target)))
 
     position_text = ""
     if "Position" in active_overlays and position.invested and position.average_price and position.quantity:
@@ -553,6 +688,7 @@ def day_signal_chart(
         quote.bid,
         quote.ask,
         *forecast_bounds,
+        *risk_reward_bounds,
     ]
     visible_price_low = min(price_candidates)
     visible_price_high = max(price_candidates)

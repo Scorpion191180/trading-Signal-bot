@@ -21,6 +21,7 @@ from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
 
 from .analysis import (
+    CANDLE_PATTERN_EVENT_PREFIX,
     DWAVE_INSTRUMENT,
     ExternalMarketContext,
     IntradaySignal,
@@ -38,7 +39,7 @@ LOGGER = logging.getLogger(__name__)
 BOT_KEY = "dwave-paper"
 ACTIVE_POLL_SECONDS = 10
 IDLE_POLL_SECONDS = 60
-ENTRY_CONFIRMATION_CYCLES = 2
+ENTRY_CONFIRMATION_CYCLES = 1
 BERLIN = ZoneInfo("Europe/Berlin")
 HISTORY_TTL_SECONDS = {60: 10, 300: 60, 3600: 300, 86400: 900}
 CONTEXT_TTL_SECONDS = 300
@@ -145,6 +146,7 @@ class FocusPaperWorker:
         self._context_cache: tuple[float, ExternalMarketContext] | None = None
         self._entry_candidates: dict[str, tuple[str, int]] = {}
         self._last_comparison_poll = 0.0
+        self._last_comparison_count = 0
 
     def _history(self, resolution_seconds: int) -> pd.DataFrame:
         cached = self._history_cache.get(resolution_seconds)
@@ -198,7 +200,7 @@ class FocusPaperWorker:
         *,
         symbol: str = DWAVE_INSTRUMENT.exchange_symbol,
     ) -> bool:
-        """Verlangt zwei gleiche Messungen innerhalb des neuen Fuenf-Minuten-Blocks."""
+        """Bestätigt ein Signal nach einer vollständig ausgewerteten Live-Messung."""
 
         timestamp = _aware_bucket_timestamp(signal_at)
         bucket = timestamp.strftime("%Y%m%dT%H%MZ")
@@ -206,6 +208,9 @@ class FocusPaperWorker:
         if signal.action != "BUY":
             self._entry_candidates.pop(normalized_symbol, None)
             return False
+        if signal.structure_event.startswith(CANDLE_PATTERN_EVENT_PREFIX):
+            self._entry_candidates.pop(normalized_symbol, None)
+            return True
         previous_bucket, previous_cycles = self._entry_candidates.get(
             normalized_symbol,
             ("", 0),
@@ -299,7 +304,7 @@ class FocusPaperWorker:
             return 0
         current_tick = monotonic()
         if current_tick - self._last_comparison_poll < COMPARISON_POLL_SECONDS:
-            return 0
+            return self._last_comparison_count
         self._last_comparison_poll = current_tick
         processed = 0
         for instrument in COMPARISON_INSTRUMENTS:
@@ -346,6 +351,7 @@ class FocusPaperWorker:
                 processed += 1
             except Exception as exc:
                 LOGGER.warning("Papierzyklus für %s fehlgeschlagen: %s", instrument.name, exc)
+        self._last_comparison_count = processed
         return processed
 
     def _bot_enabled(self) -> bool:
@@ -462,7 +468,7 @@ class FocusPaperWorker:
             account_state=account.state,
             message=(
                 f"L&S geprüft · D-Wave {signal.headline} · "
-                f"{comparison_count}/{len(COMPARISON_INSTRUMENTS)} weitere Aktien"
+                f"{comparison_count}/{len(COMPARISON_INSTRUMENTS)} weitere Aktien zuletzt geprüft"
             ),
             heartbeat_at=now,
             quote_at=signal_at,

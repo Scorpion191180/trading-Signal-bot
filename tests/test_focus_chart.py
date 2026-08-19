@@ -77,13 +77,13 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
         [],
     )
 
-    assert len(figure.data) == 2
     assert len(figure.data[0].open) == 8
     assert figure.data[0].high[0] > max(figure.data[0].open[0], figure.data[0].close[0])
     assert figure.data[0].low[0] < min(figure.data[0].open[0], figure.data[0].close[0])
     assert figure.data[0].whiskerwidth == 0.65
-    assert figure.data[1].name == "L&S Bid"
-    assert figure.data[1].y[0] == quote.bid
+    live_trace = next(trace for trace in figure.data if trace.name == "L&S Bid")
+    assert live_trace.y[0] == quote.bid
+    assert any(trace.name == "Aktuelles Botsignal" for trace in figure.data)
     assert any("HALTEN" in annotation.text for annotation in figure.layout.annotations)
     signal_annotation = next(
         annotation for annotation in figure.layout.annotations if "HALTEN" in annotation.text
@@ -98,7 +98,9 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     assert any("Investiert 171.00 €" in annotation.text for annotation in figure.layout.annotations)
     assert any("Verkaufswert 173.80 €" in annotation.text for annotation in figure.layout.annotations)
     assert any("Plus/Minus +2.80 €" in annotation.text for annotation in figure.layout.annotations)
-    assert len(figure.layout.shapes) >= 3
+    assert len(figure.layout.shapes) >= 5
+    assert any("Gewinnzone" in annotation.text for annotation in figure.layout.annotations)
+    assert any("Risikozone" in annotation.text for annotation in figure.layout.annotations)
 
     hour_figure = day_signal_chart(
         candles,

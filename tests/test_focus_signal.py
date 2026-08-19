@@ -248,10 +248,11 @@ def test_short_term_confirmation_creates_buy_and_profitable_add_signal():
     assert buy.stop_loss < buy.current_price < buy.target
     assert buy.forecast_direction == "EHER STEIGEND"
     assert buy.forecast_low < buy.current_price < buy.forecast_high
-    assert len(buy.strategy_votes) == 7
+    assert len(buy.strategy_votes) == 8
     assert [item.minutes for item in buy.trend_forecasts] == [5, 15, 30, 60, 120]
     assert all(item.expected_low < item.expected_price < item.expected_high for item in buy.trend_forecasts)
     assert any("OTT/UT" in vote for vote in buy.strategy_votes)
+    assert any("Kerzenmuster" in vote for vote in buy.strategy_votes)
 
 
 def test_five_minute_forecast_reacts_to_fast_bearish_price_reversal():

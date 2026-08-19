@@ -13,6 +13,7 @@ from src.database.models import Trade, VirtualPortfolio, VirtualPosition
 from src.database.repositories import DuplicateOrderError, PortfolioError
 
 from .analysis import (
+    CANDLE_PATTERN_EVENT_PREFIX,
     DWAVE_INSTRUMENT,
     MICROTREND_CONTINUATION_EVENT,
     PROFIT_EXHAUSTION_EVENT,
@@ -26,7 +27,7 @@ PAPER_STARTING_CAPITAL = 2_000.0
 TRADE_REPUBLIC_ORDER_FEE = 1.0
 PAPER_SLIPPAGE_PCT = 0.0005
 PAPER_MAX_SPREAD_PERCENT = 0.6
-PAPER_STRATEGY_VERSION = "focus-market-v9"
+PAPER_STRATEGY_VERSION = "focus-market-v10"
 PAPER_MAX_CAPITAL_FRACTION = 0.50
 PAPER_RISK_PER_TRADE = 0.0075
 PAPER_MIN_NET_EDGE_PCT = 0.002
@@ -262,6 +263,8 @@ def run_paper_account(
                     if signal.structure_event == US_OPENING_REVERSAL_EVENT
                     else "Bestätigtes KAUFEN · bullischer Mikrotrend · Kostenhürde bestanden"
                     if signal.structure_event == MICROTREND_CONTINUATION_EVENT
+                    else f"Bestätigtes KAUFEN · {signal.structure_event} · Kostenhürde bestanden"
+                    if signal.structure_event.startswith(CANDLE_PATTERN_EVENT_PREFIX)
                     else "Bestätigtes KAUFEN · BOS/OTT/UT/LinReg · Kostenhürde bestanden"
                 )
                 store.open_position(

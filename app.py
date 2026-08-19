@@ -11,7 +11,7 @@ from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "1.7-multi-asset-paper-charts"
+SERVICE_SCHEMA_VERSION = "1.8-pattern-signals-performance"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
@@ -25,6 +25,7 @@ def _load_focus_page():
 
     package = importlib.import_module("src.focus")
     module_names = (
+        "src.focus.patterns",
         "src.focus.analysis",
         "src.focus.stock3",
         "src.focus.paper",
