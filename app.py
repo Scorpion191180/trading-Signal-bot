@@ -11,7 +11,7 @@ from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "1.8-pattern-signals-performance"
+SERVICE_SCHEMA_VERSION = "1.9-partial-live-candles"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
@@ -70,13 +70,14 @@ st.markdown(
     [data-testid="stPlotlyChart"] {border-top: 1px solid #2a3438; border-bottom: 1px solid #2a3438;}
     [data-testid="stPlotlyChart"] .hoverlayer .hovertext {display: none !important;}
     .focus-fixed-hover {
-      position: absolute; z-index: 20; top: 3.1rem; right: 3.4rem; max-width: min(31rem, 55%);
-      display: none; flex-direction: column; gap: .16rem; padding: .38rem .5rem;
+      position: absolute; z-index: 20; top: 3.1rem; right: 3.4rem; max-width: min(22rem, 42%);
+      max-height: 5.5rem; overflow: hidden;
+      display: none; flex-direction: column; gap: .1rem; padding: .28rem .4rem;
       border: 1px solid #46555b; border-radius: .28rem; background: rgba(13,19,21,.94);
-      box-shadow: 0 .2rem .8rem rgba(0,0,0,.32); color: #cbd5e1; font-size: .64rem;
-      line-height: 1.3; pointer-events: none;
+      box-shadow: 0 .2rem .8rem rgba(0,0,0,.32); color: #cbd5e1; font-size: .6rem;
+      line-height: 1.25; pointer-events: none;
     }
-    .focus-fixed-hover strong {color: #f8fafc; font-size: .68rem;}
+    .focus-fixed-hover strong {color: #f8fafc; font-size: .64rem;}
     .focus-fixed-hover span {display: block;}
     .focus-fixed-hover b {color: #e2e8f0;}
     .comparison-header {

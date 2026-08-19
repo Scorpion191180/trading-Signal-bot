@@ -47,7 +47,10 @@ from .replay import replay_focus_day
 from .stock3 import COMPARISON_INSTRUMENTS, Stock3Instrument, Stock3LangSchwarzProvider
 
 COMPACT_PERIOD_OPTIONS = ("Intraday", "1W", "1M", "3M", "1J", "Max")
-UI_REFRESH_SECONDS = 1
+UI_REFRESH_SECONDS = 15
+LIVE_CANDLE_REFRESH_SECONDS = 1
+COMPARISON_REFRESH_SECONDS = 60
+COMPARISON_LIVE_REFRESH_SECONDS = 15
 
 _ZOOM_TRACKER_JS = """
 export default function(component) {
@@ -139,7 +142,7 @@ export default function(component) {
             panel.style.display = 'none';
             wrapper.appendChild(panel);
             const show = (event) => {
-                const points = event?.points || [];
+                const points = (event?.points || []).slice(0, 1);
                 if (!points.length) return;
                 const first = points[0];
                 const timestamp = new Date(first.x);
@@ -224,6 +227,163 @@ _CHART_HOVER_PANEL = st.components.v2.component(
     css=":host { display: none !important; }",
     js=_CHART_HOVER_PANEL_JS,
 )
+
+_LIVE_CANDLE_PATCH_JS = """
+export default function(component) {
+    const updates = Array.isArray(component.data?.updates) ? component.data.updates : [];
+    const applied = new WeakMap();
+
+    const applyUpdate = async (update) => {
+        const wrapper = document.querySelector(`.st-key-${CSS.escape(update.chartKey)}`);
+        const plot = wrapper?.querySelector('.js-plotly-plot');
+        const Plotly = window.Plotly || plot?._context?.Plotly || plot?._plotly;
+        if (!wrapper) return;
+        wrapper.dataset.focusLiveStatus = [
+            plot ? 'plot' : 'no-plot',
+            Plotly ? 'plotly' : 'no-plotly',
+            Array.isArray(plot?.data) ? 'data' : 'no-data',
+        ].join('-');
+        if (!plot || !Plotly || !Array.isArray(plot.data)) return;
+        const signature = `${update.quotedAt}-${Number(update.bid).toFixed(4)}`;
+        if (applied.get(plot) === signature) return;
+        applied.set(plot, signature);
+        wrapper.__focusPlotInstance ||= window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+        wrapper.dataset.focusPlotInstance = wrapper.__focusPlotInstance;
+
+        const price = Number(update.bid);
+        const quotedAt = new Date(update.quotedAt);
+        const candleMinutes = Math.max(Number(update.candleMinutes) || 1, 1);
+        if (!Number.isFinite(price) || Number.isNaN(quotedAt.getTime()) || candleMinutes >= 1440) {
+            return;
+        }
+
+        const candleIndex = plot.data.findIndex((trace) => trace.type === 'candlestick');
+        const lineIndex = plot.data.findIndex((trace) => trace.name === 'Kurs');
+        const priceIndex = plot.data.findIndex((trace) => trace.name === 'L&S Bid');
+        const primaryIndex = candleIndex >= 0 ? candleIndex : lineIndex;
+        if (primaryIndex < 0) return;
+        const trace = plot.data[primaryIndex];
+        const lastIndex = (trace.x?.length || 0) - 1;
+        if (lastIndex < 0) return;
+
+        const intervalMs = candleMinutes * 60_000;
+        const quoteBucketMs = Math.floor(quotedAt.getTime() / intervalMs) * intervalMs;
+        const lastTimestampMs = new Date(trace.x[lastIndex]).getTime();
+        if (!Number.isFinite(lastTimestampMs)) return;
+        let activeX = trace.x[lastIndex];
+
+        if (quoteBucketMs > lastTimestampMs + 1_000) {
+            const previousClose = Number(
+                candleIndex >= 0 ? trace.close[lastIndex] : trace.y[lastIndex]
+            );
+            activeX = new Date(quoteBucketMs).toISOString();
+            if (candleIndex >= 0) {
+                await Plotly.extendTraces(
+                    plot,
+                    {
+                        x: [[activeX]], open: [[previousClose]], high: [[Math.max(previousClose, price)]],
+                        low: [[Math.min(previousClose, price)]], close: [[price]],
+                    },
+                    [candleIndex]
+                );
+            } else {
+                await Plotly.extendTraces(plot, {x: [[activeX]], y: [[price]]}, [lineIndex]);
+            }
+        } else if (Math.abs(quoteBucketMs - lastTimestampMs) <= intervalMs) {
+            if (candleIndex >= 0) {
+                const high = Math.max(Number(trace.high[lastIndex]), price);
+                const low = Math.min(Number(trace.low[lastIndex]), price);
+                await Plotly.restyle(
+                    plot,
+                    {
+                        [`high[${lastIndex}]`]: high,
+                        [`low[${lastIndex}]`]: low,
+                        [`close[${lastIndex}]`]: price,
+                    },
+                    [candleIndex]
+                );
+            } else {
+                await Plotly.restyle(plot, {[`y[${lastIndex}]`]: price}, [lineIndex]);
+            }
+        }
+
+        if (priceIndex >= 0) {
+            await Plotly.restyle(
+                plot,
+                {x: [[activeX]], y: [[price]], hovertemplate: `L&S Bid ${price.toFixed(3)} €<extra></extra>`},
+                [priceIndex]
+            );
+        }
+        const priceAnnotation = (plot.layout?.annotations || []).findIndex(
+            (item) => item.xref === 'paper' && item.yref === 'y' && Number(item.x) === 1
+        );
+        if (priceAnnotation >= 0) {
+            await Plotly.relayout(plot, {
+                [`annotations[${priceAnnotation}].y`]: price,
+                [`annotations[${priceAnnotation}].text`]: ` ${price.toFixed(3)} `,
+            });
+        }
+        wrapper.dataset.focusLiveUpdatedAt = new Date().toISOString();
+        wrapper.dataset.focusLivePrice = price.toFixed(3);
+    };
+
+    const run = () => updates.forEach((update) => {
+        applyUpdate(update).catch(() => {
+            const wrapper = document.querySelector(`.st-key-${CSS.escape(update.chartKey)}`);
+            const plot = wrapper?.querySelector('.js-plotly-plot');
+            if (plot) applied.delete(plot);
+        });
+    });
+    run();
+    const retry = window.setTimeout(run, 80);
+    let observerTimer = null;
+    const observer = new MutationObserver(() => {
+        window.clearTimeout(observerTimer);
+        observerTimer = window.setTimeout(run, 40);
+    });
+    observer.observe(document.body, {childList: true, subtree: true});
+    return () => {
+        window.clearTimeout(retry);
+        window.clearTimeout(observerTimer);
+        observer.disconnect();
+    };
+}
+"""
+_LIVE_CANDLE_PATCH = st.components.v2.component(
+    "focus_live_candle_patch",
+    html="<span></span>",
+    css=":host { display: none !important; }",
+    js=_LIVE_CANDLE_PATCH_JS,
+)
+
+
+def _main_chart_key(period_label: str, candle_minutes: int, chart_style: str) -> str:
+    return f"dwave_professional_chart_{period_label}_{candle_minutes}_{chart_style}"
+
+
+def _comparison_chart_key(
+    instrument: Stock3Instrument,
+    period_label: str,
+    candle_minutes: int,
+    chart_style: str,
+) -> str:
+    return (
+        f"comparison_{instrument.cache_prefix}_{period_label}_{candle_minutes}_{chart_style}"
+    )
+
+
+def _live_patch_payload(
+    chart_key: str,
+    quote: LiveQuote,
+    candle_minutes: int,
+) -> dict[str, object]:
+    return {
+        "chartKey": chart_key,
+        "bid": quote.bid,
+        "ask": quote.ask,
+        "quotedAt": (quote.quoted_at or quote.fetched_at).isoformat(),
+        "candleMinutes": candle_minutes,
+    }
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -642,7 +802,12 @@ def _render_comparison_charts(
                     "scale": 2,
                 },
             },
-            key=f"comparison_{instrument.cache_prefix}_{period_label}_{selected_minutes}_{chart_style}",
+            key=_comparison_chart_key(
+                instrument,
+                period_label,
+                selected_minutes,
+                chart_style,
+            ),
         )
 
 
@@ -1341,7 +1506,7 @@ def _automatic_day_chart(store: DataStore) -> None:
         for target in sorted(forecasts_by_target)
     ]
 
-    chart_key = f"dwave_professional_chart_{period_label}_{selected_minutes}_{chart_style}"
+    chart_key = _main_chart_key(period_label, selected_minutes, str(chart_style or "Kerzen"))
     zoom_key = f"{chart_key}_zoom"
     stored_zoom = st.session_state.get(zoom_key, {}).get("ranges")
     zoom_state = _ZOOM_TRACKER(
@@ -1389,7 +1554,7 @@ def _automatic_day_chart(store: DataStore) -> None:
     )
 
 
-@st.fragment(run_every=30)
+@st.fragment(run_every=COMPARISON_REFRESH_SECONDS)
 def _automatic_comparison_charts(store: DataStore) -> None:
     period_label = str(st.session_state.get("dwave_chart_period", "Intraday"))
     if period_label not in COMPACT_PERIOD_OPTIONS:
@@ -1418,7 +1583,83 @@ def _automatic_comparison_charts(store: DataStore) -> None:
     )
 
 
+def _selected_live_chart_settings() -> tuple[str, int, str]:
+    period_label = str(st.session_state.get("dwave_chart_period", "Intraday"))
+    if period_label not in COMPACT_PERIOD_OPTIONS:
+        period_label = "Intraday"
+    interval_options = PERIOD_INTERVALS[period_label]
+    selected_minutes = int(
+        st.session_state.get(f"dwave_interval_{period_label}", DEFAULT_INTERVAL[period_label])
+    )
+    if selected_minutes not in interval_options:
+        selected_minutes = DEFAULT_INTERVAL[period_label]
+    chart_style = str(st.session_state.get("dwave_chart_style", "Kerzen"))
+    return period_label, selected_minutes, chart_style
+
+
+@st.fragment(run_every=LIVE_CANDLE_REFRESH_SECONDS)
+def _automatic_live_dwave_candle() -> None:
+    """Überträgt sekündlich nur den jüngsten Bid in die bereits gezeichnete Kerze."""
+
+    try:
+        quote = LiveQuote(**_cached_stock3_quote())
+    except (ProviderError, TypeError, ValueError):
+        return
+    period_label, selected_minutes, chart_style = _selected_live_chart_settings()
+    _LIVE_CANDLE_PATCH(
+        key="dwave_live_candle_patch",
+        data={
+            "updates": [
+                _live_patch_payload(
+                    _main_chart_key(period_label, selected_minutes, chart_style),
+                    quote,
+                    selected_minutes,
+                )
+            ]
+        },
+        width="content",
+    )
+
+
+@st.fragment(run_every=COMPARISON_LIVE_REFRESH_SECONDS)
+def _automatic_live_comparison_candles() -> None:
+    """Aktualisiert Zusatzaktien leichtgewichtig, ohne deren Analysecharts neu zu bauen."""
+
+    period_label, selected_minutes, chart_style = _selected_live_chart_settings()
+    updates: list[dict[str, object]] = []
+    for instrument in COMPARISON_INSTRUMENTS:
+        arguments = (
+            instrument.name,
+            instrument.instrument_id,
+            instrument.isin,
+            instrument.cache_prefix,
+        )
+        try:
+            quote = LiveQuote(**_cached_comparison_quote(*arguments))
+        except (ProviderError, TypeError, ValueError):
+            continue
+        updates.append(
+            _live_patch_payload(
+                _comparison_chart_key(
+                    instrument,
+                    period_label,
+                    selected_minutes,
+                    chart_style,
+                ),
+                quote,
+                selected_minutes,
+            )
+        )
+    _LIVE_CANDLE_PATCH(
+        key="comparison_live_candle_patch",
+        data={"updates": updates},
+        width="content",
+    )
+
+
 def focus_page(store: DataStore) -> None:
     _automatic_day_chart(store)
     _automatic_comparison_charts(store)
+    _automatic_live_dwave_candle()
+    _automatic_live_comparison_candles()
     _CHART_HOVER_PANEL(key="focus_fixed_hover_panel", width="content")

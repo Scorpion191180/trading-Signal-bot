@@ -93,7 +93,9 @@ def test_day_signal_chart_contains_live_price_position_and_signal():
     assert figure.layout.dragmode == "pan"
     assert figure.layout.xaxis.showspikes
     assert figure.layout.yaxis.side == "right"
-    assert figure.layout.hovermode == "x unified"
+    assert figure.layout.hovermode == "closest"
+    assert figure.layout.hoverdistance == 18
+    assert figure.layout.hoverlabel.font.size == 10
     assert any("Einstand" in annotation.text for annotation in figure.layout.annotations)
     assert any("Investiert 171.00 €" in annotation.text for annotation in figure.layout.annotations)
     assert any("Verkaufswert 173.80 €" in annotation.text for annotation in figure.layout.annotations)

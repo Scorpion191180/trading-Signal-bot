@@ -36,7 +36,7 @@ Für Positionswert und Plus/Minus verwendet die App den **L&S-Geldkurs**, weil d
 
 Die sichtbaren Kerzen werden aus echten Open-, High-, Low- und Close-Werten des gewählten Zeitraums gebaut. Der Körper reicht von Eröffnung bis Schluss; die Dochte reichen bis zum höchsten und niedrigsten tatsächlich beobachteten Kurs. Eine Kerze kann deshalb bei einem echten Doji oder einem Intervall ohne zusätzliche Preisspanne naturgemäß sehr schmal sein.
 
-Die D-Wave-Anzeige wird bei geöffneter App automatisch jede Sekunde, die darunterliegenden Vergleichscharts ressourcenschonend alle 30 Sekunden neu geladen. Die eigentliche Signallogik und das Papierkonto laufen als eigener macOS-Hintergrunddienst auch dann weiter, wenn Browser und Streamlit-App geschlossen sind. Die primäre L&S-Sitzung läuft werktags von 07:30 bis 23:00 Uhr. Danach bleibt der Dienst aktiv, pausiert aber die Kursanalyse bis zur nächsten Sitzung.
+Die laufende D-Wave-Kerze wird bei geöffneter App jede Sekunde direkt im bereits gezeichneten Chart nachgeführt; der komplette D-Wave-Chart wird nur alle 15 Sekunden neu analysiert. Die Zusatzaktien erhalten leichte Kursaktualisierungen alle 15 Sekunden und werden nur einmal pro Minute vollständig neu gezeichnet. Dadurch bleiben Zoom und Mausposition stabil und die teuren Mehrfachanalysen laufen deutlich seltener. Die eigentliche Signallogik und das Papierkonto laufen als eigener macOS-Hintergrunddienst auch dann weiter, wenn Browser und Streamlit-App geschlossen sind. Die primäre L&S-Sitzung läuft werktags von 07:30 bis 23:00 Uhr. Danach bleibt der Dienst aktiv, pausiert aber die Kursanalyse bis zur nächsten Sitzung.
 
 ## Private Position und unabhängiger Signal-Bot
 

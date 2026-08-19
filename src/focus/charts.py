@@ -760,10 +760,15 @@ def day_signal_chart(
         xaxis_rangeslider_visible=False,
         xaxis=xaxis,
         yaxis=yaxis,
-        hovermode="x unified",
-        hoverdistance=50,
-        spikedistance=-1,
-        hoverlabel={"bgcolor": "#1c2529", "font": {"color": "#f8fafc"}},
+        hovermode="closest",
+        hoverdistance=18,
+        spikedistance=30,
+        hoverlabel={
+            "bgcolor": "#1c2529",
+            "font": {"color": "#f8fafc", "size": 10},
+            "namelength": 18,
+            "align": "left",
+        },
         showlegend="EMA" in active_overlays
         or (
             "Prognose" in active_overlays

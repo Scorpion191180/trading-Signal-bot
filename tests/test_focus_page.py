@@ -5,7 +5,14 @@ from datetime import UTC, datetime
 import pandas as pd
 
 from src.focus.analysis import FocusPosition
-from src.focus.page import UI_REFRESH_SECONDS, _apply_live_quote, _local_trade_time, _signal_mode_text
+from src.focus.page import (
+    LIVE_CANDLE_REFRESH_SECONDS,
+    UI_REFRESH_SECONDS,
+    _apply_live_quote,
+    _live_patch_payload,
+    _local_trade_time,
+    _signal_mode_text,
+)
 from src.focus.quote import LiveQuote
 
 
@@ -45,7 +52,7 @@ def test_trade_times_are_shown_in_berlin_time():
     assert local.strftime("%H:%M") == "15:30"
 
 
-def test_live_quote_updates_current_candle_each_second():
+def test_live_quote_updates_current_candle_without_full_chart_refresh_each_second():
     quote = _quote(18.4)
     quote_time = pd.Timestamp(quote.fetched_at).floor("min")
     candles = pd.DataFrame(
@@ -55,6 +62,16 @@ def test_live_quote_updates_current_candle_each_second():
 
     updated = _apply_live_quote(candles, quote)
 
-    assert UI_REFRESH_SECONDS == 1
+    assert LIVE_CANDLE_REFRESH_SECONDS == 1
+    assert UI_REFRESH_SECONDS == 15
     assert updated.loc[quote_time, "close"] == 18.4
     assert updated.loc[quote_time, "high"] == 18.4
+
+    payload = _live_patch_payload("dwave_chart", quote, 5)
+    assert payload == {
+        "chartKey": "dwave_chart",
+        "bid": 18.4,
+        "ask": 18.4,
+        "quotedAt": quote.fetched_at.isoformat(),
+        "candleMinutes": 5,
+    }
