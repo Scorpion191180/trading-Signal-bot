@@ -9,4 +9,7 @@ venv/
 .DS_Store
 data/*.db
 data/*.db-*
+data/*.lock
+data/yfinance_cache/
+data/stock3_cache/
 *.log

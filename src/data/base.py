@@ -19,6 +19,8 @@ class MarketDataRequest:
     interval: str = "5m"
     period: str = "5d"
     prepost: bool = False
+    minimum_rows: int = 200
+    require_latest_volume: bool = True
 
 
 class MarketDataProvider(Protocol):
@@ -27,6 +29,12 @@ class MarketDataProvider(Protocol):
 
     def history(self, request: MarketDataRequest) -> pd.DataFrame:
         """Liefert OHLCV-Daten mit UTC DatetimeIndex und Standardspalten."""
+
+
+def source_name(frame: pd.DataFrame, provider: MarketDataProvider) -> str:
+    """Liest die tatsächlich verwendete Quelle einer normalisierten Kursreihe."""
+
+    return str(frame.attrs.get("provider", provider.name))
 
 
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
@@ -39,6 +47,33 @@ INTERVAL_DURATION = {
     "1h": timedelta(hours=1),
     "1d": timedelta(days=1),
 }
+
+
+def recommended_period(interval: str, *, backtest: bool = False) -> str:
+    """Wählt genug Historie für EMA 200, ohne unnötige Gratisabrufe zu erzeugen."""
+
+    regular = {
+        "1m": "5d",
+        "5m": "5d",
+        "15m": "1mo",
+        "30m": "1mo",
+        "60m": "3mo",
+        "1h": "3mo",
+        "1d": "1y",
+    }
+    extended = {
+        "1m": "7d",
+        "5m": "60d",
+        "15m": "60d",
+        "30m": "60d",
+        "60m": "2y",
+        "1h": "2y",
+        "1d": "2y",
+    }
+    periods = extended if backtest else regular
+    if interval not in periods:
+        raise ProviderError(f"Intervall {interval!r} wird nicht unterstützt.")
+    return periods[interval]
 
 
 def normalize_ohlcv(frame: pd.DataFrame, symbol: str | None = None) -> pd.DataFrame:
@@ -98,3 +133,22 @@ def completed_candles(
     if completed.empty:
         raise ProviderError("Die Datenquelle enthält noch keine abgeschlossene Kerze.")
     return completed
+
+
+def validate_history(
+    frame: pd.DataFrame,
+    *,
+    minimum_rows: int = 200,
+    require_latest_volume: bool = True,
+) -> pd.DataFrame:
+    """Verwirft zu kurze oder offensichtlich unbrauchbare Reihen vor einem Fallback."""
+
+    if len(frame) < minimum_rows:
+        raise ProviderError(
+            f"Nur {len(frame)} abgeschlossene Kerzen geliefert; mindestens {minimum_rows} erforderlich."
+        )
+    if float(frame["close"].iloc[-1]) <= 0:
+        raise ProviderError("Der jüngste Schlusskurs ist nicht plausibel.")
+    if require_latest_volume and float(frame["volume"].iloc[-1]) <= 0:
+        raise ProviderError("Die jüngste Kerze enthält kein belastbares Volumen.")
+    return frame

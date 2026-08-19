@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from src.analysis.indicators import add_indicators
 from src.analysis.signals import SignalAction, analyze_signal
 from src.config import STRATEGIES, AppSettings
-from src.data.base import MarketDataProvider, MarketDataRequest
+from src.data.base import MarketDataProvider, MarketDataRequest, recommended_period, source_name
 from src.database.repositories import DataStore, DuplicateOrderError, PortfolioError
+from src.news import NewsProvider, NewsProviderError, news_score
 from src.portfolio.risk import calculate_position_size
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -25,10 +29,17 @@ class AgentRunResult:
 class TradingAgent:
     """Verbindet Daten, Regeln, Risikoschutz und getrennte Spielgeld-Depots."""
 
-    def __init__(self, provider: MarketDataProvider, store: DataStore, settings: AppSettings) -> None:
+    def __init__(
+        self,
+        provider: MarketDataProvider,
+        store: DataStore,
+        settings: AppSettings,
+        news_provider: NewsProvider | None = None,
+    ) -> None:
         self.provider = provider
         self.store = store
         self.settings = settings
+        self.news_provider = news_provider
 
     @staticmethod
     def current_run_key(now: datetime | None = None) -> str:
@@ -52,14 +63,29 @@ class TradingAgent:
         portfolios = {portfolio.strategy: portfolio for portfolio in self.store.list_portfolios()}
         for item in watchlist:
             try:
+                news_factor = 0.5
+                relevant_news = []
+                if self.news_provider is not None:
+                    try:
+                        news_items = self.news_provider.get_news([item.symbol])
+                        self.store.upsert_news(news_items)
+                        relevant_news = [
+                            news
+                            for news in news_items
+                            if item.symbol in (news.related_symbols or (news.symbol,))
+                        ]
+                        news_factor = news_score(relevant_news)
+                    except NewsProviderError as exc:
+                        LOGGER.warning("Nachrichten für %s bleiben neutral: %s", item.symbol, exc)
                 frame = self.provider.history(
                     MarketDataRequest(
                         symbol=item.symbol,
                         interval=item.interval,
-                        period="1y" if item.interval == "1d" else "5d",
+                        period=recommended_period(item.interval),
                         prepost=item.extended_hours,
                     )
                 )
+                actual_provider = source_name(frame, self.provider)
                 indicators = add_indicators(frame)
                 relative_volume = float(indicators["relative_volume"].iloc[-1])
                 for profile in STRATEGIES.values():
@@ -67,16 +93,23 @@ class TradingAgent:
                         item.symbol,
                         frame,
                         profile,
-                        provider=self.provider.name,
+                        provider=actual_provider,
                         stale_after_minutes=96 * 60 if item.interval == "1d" else self.settings.stale_after_minutes,
+                        news_factor=news_factor,
                     )
-                    self.store.record_signal(signal)
+                    self.store.record_signal(signal, relevant_news)
                     signal_count += 1
                     portfolio = portfolios[profile.name]
                     positions = self.store.list_positions(portfolio.id)
                     position = next((value for value in positions if value.symbol == item.symbol), None)
                     if position:
-                        self.store.update_market_price(portfolio.id, item.symbol, signal.price)
+                        self.store.update_market_price(
+                            portfolio.id,
+                            item.symbol,
+                            signal.price,
+                            provider=actual_provider,
+                            is_demo=self.provider.is_demo,
+                        )
                         exit_reason = None
                         if signal.price <= position.stop_loss:
                             exit_reason = "Stop-Loss erreicht"
@@ -91,6 +124,10 @@ class TradingAgent:
                                 market_price=signal.price,
                                 reason=exit_reason,
                                 signal_score=signal.score,
+                                provider=actual_provider,
+                                is_demo=self.provider.is_demo,
+                                news_factor=news_factor,
+                                news_ids=tuple(news.external_id for news in relevant_news),
                                 idempotency_key=f"{key}:{profile.name}:{item.symbol}:SELL",
                             )
                             action_count += 1
@@ -119,6 +156,10 @@ class TradingAgent:
                                 reason="Regelbasiertes Kaufsignal: " + "; ".join(signal.positive_factors[:3]),
                                 signal_score=signal.score,
                                 weight_version=signal.weight_version,
+                                provider=actual_provider,
+                                is_demo=self.provider.is_demo,
+                                news_factor=news_factor,
+                                news_ids=tuple(news.external_id for news in relevant_news),
                                 idempotency_key=f"{key}:{profile.name}:{item.symbol}:BUY",
                             )
                             action_count += 1

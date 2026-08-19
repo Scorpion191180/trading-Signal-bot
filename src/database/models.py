@@ -82,6 +82,11 @@ class VirtualPosition(Base):
     entry_reason: Mapped[str] = mapped_column(Text)
     entry_score: Mapped[float] = mapped_column(Float)
     weight_version: Mapped[str] = mapped_column(String(30), default="v1")
+    entry_provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    last_provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    entry_news_factor: Mapped[float] = mapped_column(Float, default=0.5)
+    entry_news_ids: Mapped[str] = mapped_column(Text, default="")
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
     portfolio: Mapped[VirtualPortfolio] = relationship(back_populates="positions")
@@ -104,6 +109,8 @@ class VirtualOrder(Base):
     slippage_cost: Mapped[float] = mapped_column(Float)
     reason: Mapped[str] = mapped_column(Text)
     signal_score: Mapped[float] = mapped_column(Float)
+    provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -131,6 +138,13 @@ class Trade(Base):
     exit_reason: Mapped[str] = mapped_column(Text)
     entry_score: Mapped[float] = mapped_column(Float)
     exit_score: Mapped[float] = mapped_column(Float)
+    entry_provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    exit_provider: Mapped[str] = mapped_column(String(80), default="unbekannt")
+    entry_news_factor: Mapped[float] = mapped_column(Float, default=0.5)
+    exit_news_factor: Mapped[float] = mapped_column(Float, default=0.5)
+    entry_news_ids: Mapped[str] = mapped_column(Text, default="")
+    exit_news_ids: Mapped[str] = mapped_column(Text, default="")
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     max_favorable: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_adverse: Mapped[float | None] = mapped_column(Float, nullable=True)
 
@@ -146,10 +160,73 @@ class SignalRecord(Base):
     confidence: Mapped[float] = mapped_column(Float)
     price: Mapped[float] = mapped_column(Float)
     provider: Mapped[str] = mapped_column(String(80))
+    news_factor: Mapped[float] = mapped_column(Float, default=0.5)
+    news_ids: Mapped[str] = mapped_column(Text, default="")
     positive_factors: Mapped[str] = mapped_column(Text, default="")
     negative_factors: Mapped[str] = mapped_column(Text, default="")
     data_problem: Mapped[str | None] = mapped_column(Text, nullable=True)
     analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class FocusForecast(Base):
+    """Unveränderliche D-Wave-Prognose, bevor der spätere Kurs bekannt ist."""
+
+    __tablename__ = "focus_forecasts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    forecast_key: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    provider: Mapped[str] = mapped_column(String(80))
+    model_version: Mapped[str] = mapped_column(String(30), default="focus-market-v1", index=True)
+    forecast_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    entry_price: Mapped[float] = mapped_column(Float)
+    bid: Mapped[float] = mapped_column(Float)
+    ask: Mapped[float] = mapped_column(Float)
+    direction: Mapped[str] = mapped_column(String(24))
+    model_score: Mapped[float] = mapped_column(Float)
+    forecast_low: Mapped[float] = mapped_column(Float)
+    forecast_high: Mapped[float] = mapped_column(Float)
+    market_regime: Mapped[str] = mapped_column(String(40))
+    strategy_votes: Mapped[str] = mapped_column(Text, default="")
+    horizons_json: Mapped[str] = mapped_column(Text, default="")
+    spread_percent: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class FocusForecastOutcome(Base):
+    """Nur mit einem später beobachteten Kurs erzeugtes Walk-forward-Ergebnis."""
+
+    __tablename__ = "focus_forecast_outcomes"
+    __table_args__ = (UniqueConstraint("forecast_id", "horizon_minutes", name="uq_focus_forecast_horizon"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("focus_forecasts.id", ondelete="CASCADE"), index=True
+    )
+    horizon_minutes: Mapped[int] = mapped_column(Integer, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observed_price: Mapped[float] = mapped_column(Float)
+    return_percent: Mapped[float] = mapped_column(Float)
+    direction_hit: Mapped[bool] = mapped_column(Boolean)
+    zone_hit: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class FocusBotStatus(Base):
+    """Heartbeat und letzter sicherer Zustand des unabhängigen Papier-Bots."""
+
+    __tablename__ = "focus_bot_status"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_key: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    run_state: Mapped[str] = mapped_column(String(20), default="STARTING", index=True)
+    signal_action: Mapped[str] = mapped_column(String(20), default="WAIT")
+    signal_score: Mapped[float] = mapped_column(Float, default=50.0)
+    account_state: Mapped[str] = mapped_column(String(30), default="CASH")
+    message: Mapped[str] = mapped_column(Text, default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_quote_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_heartbeat: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
 
 class StrategyVersion(Base):
@@ -196,10 +273,17 @@ class NewsRecord(Base):
     symbol: Mapped[str] = mapped_column(String(20), index=True)
     source: Mapped[str] = mapped_column(String(120))
     title: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(Text, default="")
     sentiment: Mapped[str] = mapped_column(String(20))
     impact: Mapped[float] = mapped_column(Float)
+    credibility: Mapped[float] = mapped_column(Float, default=0.5)
+    direct_relevance: Mapped[bool] = mapped_column(Boolean, default=True)
+    possibly_priced_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    related_symbols: Mapped[str] = mapped_column(Text, default="")
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class NotificationRecord(Base):

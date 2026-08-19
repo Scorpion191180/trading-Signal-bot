@@ -3,19 +3,29 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
+from bisect import bisect_left
 from dataclasses import asdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.analysis.signals import SignalResult
 from src.config import STRATEGIES, WEIGHTS, AppSettings
+from src.news import NewsItem
 from src.portfolio.execution import simulated_execution
+
+if TYPE_CHECKING:
+    from src.analysis.signals import SignalResult
 
 from .models import (
     AgentRun,
+    FocusBotStatus,
+    FocusForecast,
+    FocusForecastOutcome,
+    NewsRecord,
     RealPosition,
     SignalRecord,
     StrategyVersion,
@@ -26,6 +36,12 @@ from .models import (
     WatchlistItem,
     WeightVersion,
 )
+
+FOCUS_FORECAST_HORIZONS = (5, 15, 30, 60, 120)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class PortfolioError(RuntimeError):
@@ -129,6 +145,31 @@ class DataStore:
             if item:
                 session.delete(item)
 
+    def update_watchlist_settings(
+        self,
+        item_id: int,
+        *,
+        priority: bool,
+        trading_allowed: bool,
+        interval: str,
+        extended_hours: bool,
+    ) -> WatchlistItem:
+        """Speichert die direkt bedienbaren Einstellungen eines Watchlist-Eintrags."""
+
+        if interval not in {"1m", "5m", "15m", "30m", "1h", "1d"}:
+            raise ValueError("Das gewählte Analyseintervall wird nicht unterstützt.")
+        with self.sessions.begin() as session:
+            item = session.get(WatchlistItem, item_id)
+            if item is None:
+                raise ValueError("Der Watchlist-Eintrag wurde nicht gefunden.")
+            item.priority = priority
+            item.trading_allowed = trading_allowed
+            item.analysis_only = not trading_allowed
+            item.interval = interval
+            item.extended_hours = extended_hours
+            session.flush()
+            return item
+
     def list_real_positions(self) -> list[RealPosition]:
         with self.sessions() as session:
             return list(session.scalars(select(RealPosition).order_by(RealPosition.symbol)))
@@ -178,6 +219,38 @@ class DataStore:
         with self.sessions() as session:
             return list(session.scalars(select(VirtualPortfolio).order_by(VirtualPortfolio.name)))
 
+    def get_or_create_virtual_portfolio(
+        self,
+        *,
+        name: str,
+        strategy: str,
+        strategy_version: str,
+        initial_capital: float,
+    ) -> VirtualPortfolio:
+        """Erzeugt ein klar benanntes Papierkonto, ohne einen vorhandenen Verlauf zurückzusetzen."""
+
+        if initial_capital <= 0:
+            raise ValueError("Startkapital muss positiv sein.")
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("Das Papierkonto benötigt einen Namen.")
+        with self.sessions.begin() as session:
+            portfolio = session.scalar(select(VirtualPortfolio).where(VirtualPortfolio.name == normalized_name))
+            if portfolio is None:
+                portfolio = VirtualPortfolio(
+                    name=normalized_name,
+                    strategy=strategy,
+                    strategy_version=strategy_version,
+                    initial_capital=initial_capital,
+                    cash=initial_capital,
+                )
+                session.add(portfolio)
+                session.flush()
+            else:
+                portfolio.strategy = strategy
+                portfolio.strategy_version = strategy_version
+            return portfolio
+
     def get_portfolio(self, portfolio_id: int) -> VirtualPortfolio:
         with self.sessions() as session:
             portfolio = session.get(VirtualPortfolio, portfolio_id)
@@ -192,7 +265,36 @@ class DataStore:
                 query = query.where(VirtualPosition.portfolio_id == portfolio_id)
             return list(session.scalars(query))
 
-    def update_market_price(self, portfolio_id: int, symbol: str, price: float) -> None:
+    @staticmethod
+    def _validate_position_source(
+        position: VirtualPosition,
+        *,
+        provider: str,
+        is_demo: bool,
+        price: float,
+    ) -> None:
+        if position.entry_provider == "unbekannt":
+            raise PortfolioError(
+                "Die Herkunft dieser Altposition ist unbekannt. Sie wird nicht mit neuen Kursen vermischt."
+            )
+        if position.is_demo != is_demo:
+            raise PortfolioError("Wechsel zwischen Demo- und Realdaten für eine offene Position blockiert.")
+        if position.last_provider != provider and position.current_price > 0:
+            change = abs(price / position.current_price - 1)
+            if change > 0.25:
+                raise PortfolioError(
+                    f"Quellenwechsel {position.last_provider} → {provider} mit {change:.1%} Kurssprung blockiert."
+                )
+
+    def update_market_price(
+        self,
+        portfolio_id: int,
+        symbol: str,
+        price: float,
+        *,
+        provider: str,
+        is_demo: bool,
+    ) -> None:
         with self.sessions.begin() as session:
             position = session.scalar(
                 select(VirtualPosition).where(
@@ -201,7 +303,9 @@ class DataStore:
                 )
             )
             if position and price > 0:
+                self._validate_position_source(position, provider=provider, is_demo=is_demo, price=price)
                 position.current_price = price
+                position.last_provider = provider
 
     def portfolio_value(self, portfolio_id: int) -> float:
         with self.sessions() as session:
@@ -227,7 +331,15 @@ class DataStore:
         reason: str,
         signal_score: float,
         weight_version: str,
+        provider: str,
+        is_demo: bool,
+        news_factor: float = 0.5,
+        news_ids: tuple[str, ...] = (),
         idempotency_key: str | None = None,
+        fee: float | None = None,
+        spread_pct: float | None = None,
+        slippage_pct: float | None = None,
+        executed_at: datetime | None = None,
     ) -> VirtualOrder:
         key = idempotency_key or str(uuid.uuid4())
         with self.sessions.begin() as session:
@@ -248,9 +360,9 @@ class DataStore:
                 "BUY",
                 market_price,
                 quantity,
-                fee=self.settings.order_fee,
-                spread_pct=self.settings.spread_pct,
-                slippage_pct=self.settings.slippage_pct,
+                fee=self.settings.order_fee if fee is None else fee,
+                spread_pct=self.settings.spread_pct if spread_pct is None else spread_pct,
+                slippage_pct=self.settings.slippage_pct if slippage_pct is None else slippage_pct,
             )
             total = quote.gross_value + quote.fees
             if total > portfolio.cash:
@@ -272,6 +384,9 @@ class DataStore:
                 slippage_cost=quote.slippage_cost,
                 reason=reason,
                 signal_score=signal_score,
+                provider=provider,
+                is_demo=is_demo,
+                executed_at=executed_at or datetime.now(UTC),
             )
             session.add(order)
             session.add(
@@ -287,6 +402,12 @@ class DataStore:
                     entry_reason=reason,
                     entry_score=signal_score,
                     weight_version=weight_version,
+                    entry_provider=provider,
+                    last_provider=provider,
+                    entry_news_factor=news_factor,
+                    entry_news_ids=",".join(news_ids),
+                    is_demo=is_demo,
+                    opened_at=executed_at or datetime.now(UTC),
                 )
             )
             session.flush()
@@ -300,8 +421,16 @@ class DataStore:
         market_price: float,
         reason: str,
         signal_score: float,
+        provider: str,
+        is_demo: bool,
+        news_factor: float = 0.5,
+        news_ids: tuple[str, ...] = (),
         quantity: float | None = None,
         idempotency_key: str | None = None,
+        fee: float | None = None,
+        spread_pct: float | None = None,
+        slippage_pct: float | None = None,
+        executed_at: datetime | None = None,
     ) -> VirtualOrder:
         key = idempotency_key or str(uuid.uuid4())
         with self.sessions.begin() as session:
@@ -316,6 +445,7 @@ class DataStore:
             )
             if not portfolio or not position:
                 raise PortfolioError("Offene virtuelle Position nicht gefunden.")
+            self._validate_position_source(position, provider=provider, is_demo=is_demo, price=market_price)
             sell_quantity = position.quantity if quantity is None else quantity
             if sell_quantity <= 0 or sell_quantity > position.quantity + 1e-9:
                 raise PortfolioError("Ungültige Verkaufsstückzahl.")
@@ -323,9 +453,9 @@ class DataStore:
                 "SELL",
                 market_price,
                 sell_quantity,
-                fee=self.settings.order_fee,
-                spread_pct=self.settings.spread_pct,
-                slippage_pct=self.settings.slippage_pct,
+                fee=self.settings.order_fee if fee is None else fee,
+                spread_pct=self.settings.spread_pct if spread_pct is None else spread_pct,
+                slippage_pct=self.settings.slippage_pct if slippage_pct is None else slippage_pct,
             )
             entry_fee_share = position.entry_fees_remaining * (sell_quantity / position.quantity)
             proceeds = quote.gross_value - quote.fees
@@ -347,6 +477,9 @@ class DataStore:
                 slippage_cost=quote.slippage_cost,
                 reason=reason,
                 signal_score=signal_score,
+                provider=provider,
+                is_demo=is_demo,
+                executed_at=executed_at or datetime.now(UTC),
             )
             session.add(order)
             session.add(
@@ -370,17 +503,32 @@ class DataStore:
                     exit_reason=reason,
                     entry_score=position.entry_score,
                     exit_score=signal_score,
+                    entry_provider=position.entry_provider,
+                    exit_provider=provider,
+                    entry_news_factor=position.entry_news_factor,
+                    exit_news_factor=news_factor,
+                    entry_news_ids=position.entry_news_ids,
+                    exit_news_ids=",".join(news_ids),
+                    is_demo=is_demo,
+                    exit_time=executed_at or datetime.now(UTC),
                 )
             )
             position.quantity -= sell_quantity
             position.entry_fees_remaining -= entry_fee_share
             position.current_price = market_price
+            position.last_provider = provider
             if position.quantity <= 1e-9:
                 session.delete(position)
             session.flush()
             return order
 
-    def reset_portfolio(self, portfolio_id: int, initial_capital: float) -> None:
+    def reset_portfolio(
+        self,
+        portfolio_id: int,
+        initial_capital: float,
+        *,
+        active: bool | None = None,
+    ) -> None:
         if initial_capital <= 0:
             raise ValueError("Startkapital muss positiv sein.")
         with self.sessions.begin() as session:
@@ -392,6 +540,19 @@ class DataStore:
             session.execute(delete(VirtualPosition).where(VirtualPosition.portfolio_id == portfolio_id))
             portfolio.initial_capital = initial_capital
             portfolio.cash = initial_capital
+            if active is not None:
+                portfolio.active = bool(active)
+
+    def set_portfolio_active(self, portfolio_id: int, active: bool) -> VirtualPortfolio:
+        """Schaltet automatische Orders eines virtuellen Depots dauerhaft an oder aus."""
+
+        with self.sessions.begin() as session:
+            portfolio = session.get(VirtualPortfolio, portfolio_id)
+            if portfolio is None:
+                raise PortfolioError("Virtuelles Depot nicht gefunden.")
+            portfolio.active = bool(active)
+            session.flush()
+            return portfolio
 
     def list_trades(self, portfolio_id: int | None = None) -> list[Trade]:
         with self.sessions() as session:
@@ -407,7 +568,11 @@ class DataStore:
                 query = query.where(VirtualOrder.portfolio_id == portfolio_id)
             return list(session.scalars(query))
 
-    def record_signal(self, result: SignalResult) -> SignalRecord:
+    def record_signal(
+        self,
+        result: SignalResult,
+        news_items: list[NewsItem] | None = None,
+    ) -> SignalRecord:
         with self.sessions.begin() as session:
             record = SignalRecord(
                 symbol=result.symbol,
@@ -417,6 +582,8 @@ class DataStore:
                 confidence=result.confidence,
                 price=result.price,
                 provider=result.provider,
+                news_factor=result.news_factor,
+                news_ids=",".join(item.external_id for item in (news_items or [])),
                 positive_factors="\n".join(result.positive_factors),
                 negative_factors="\n".join(result.negative_factors),
                 data_problem=result.data_problem,
@@ -429,6 +596,557 @@ class DataStore:
     def list_signals(self, limit: int = 100) -> list[SignalRecord]:
         with self.sessions() as session:
             return list(session.scalars(select(SignalRecord).order_by(SignalRecord.analyzed_at.desc()).limit(limit)))
+
+    def record_focus_forecast(
+        self,
+        *,
+        symbol: str,
+        provider: str,
+        forecast_at: datetime,
+        entry_price: float,
+        bid: float,
+        ask: float,
+        direction: str,
+        model_score: float,
+        forecast_low: float,
+        forecast_high: float,
+        market_regime: str,
+        strategy_votes: tuple[str, ...],
+        spread_percent: float,
+        horizon_forecasts: tuple[dict[str, object], ...] = (),
+        model_version: str = "focus-market-v1",
+    ) -> tuple[FocusForecast, bool]:
+        """Speichert höchstens eine unveränderliche Prognose pro Fünf-Minuten-Block."""
+
+        timestamp = _aware_utc(forecast_at).replace(second=0, microsecond=0)
+        bucket = timestamp.replace(minute=timestamp.minute - timestamp.minute % 5)
+        key = f"{symbol.upper().strip()}:{provider}:{model_version}:{bucket:%Y%m%dT%H%MZ}"
+        with self.sessions.begin() as session:
+            existing = session.scalar(select(FocusForecast).where(FocusForecast.forecast_key == key))
+            if existing is not None:
+                return existing, False
+            record = FocusForecast(
+                forecast_key=key,
+                symbol=symbol.upper().strip(),
+                provider=provider,
+                model_version=model_version,
+                forecast_at=forecast_at,
+                entry_price=entry_price,
+                bid=bid,
+                ask=ask,
+                direction=direction,
+                model_score=model_score,
+                forecast_low=forecast_low,
+                forecast_high=forecast_high,
+                market_regime=market_regime,
+                strategy_votes="\n".join(strategy_votes),
+                horizons_json=json.dumps(horizon_forecasts, ensure_ascii=False, sort_keys=True),
+                spread_percent=spread_percent,
+            )
+            session.add(record)
+            session.flush()
+            return record, True
+
+    def evaluate_focus_forecasts(
+        self,
+        symbol: str,
+        observations: list[tuple[datetime, float]],
+        *,
+        provider: str | None = None,
+    ) -> int:
+        """Löst Prognosen nur mit Kursen auf, die nach ihrem Erstellungszeitpunkt liegen."""
+
+        ordered = sorted((_aware_utc(timestamp), float(price)) for timestamp, price in observations)
+        if not ordered:
+            return 0
+        observation_times = [item[0] for item in ordered]
+        first_time, last_time = observation_times[0], observation_times[-1]
+        resolved = 0
+        with self.sessions.begin() as session:
+            forecast_query = select(FocusForecast).where(
+                FocusForecast.symbol == symbol.upper().strip(),
+                FocusForecast.forecast_at
+                >= first_time - timedelta(minutes=max(FOCUS_FORECAST_HORIZONS)),
+                FocusForecast.forecast_at <= last_time - timedelta(minutes=5),
+            )
+            if provider is not None:
+                forecast_query = forecast_query.where(FocusForecast.provider == provider)
+            forecasts = list(session.scalars(forecast_query))
+            if not forecasts:
+                return 0
+            forecast_ids = [forecast.id for forecast in forecasts]
+            existing = set(
+                session.execute(
+                    select(FocusForecastOutcome.forecast_id, FocusForecastOutcome.horizon_minutes).where(
+                        FocusForecastOutcome.forecast_id.in_(forecast_ids)
+                    )
+                ).all()
+            )
+            for forecast in forecasts:
+                forecast_at = _aware_utc(forecast.forecast_at)
+                try:
+                    horizon_values = {
+                        int(item["minutes"]): item
+                        for item in json.loads(forecast.horizons_json or "[]")
+                        if isinstance(item, dict) and "minutes" in item
+                    }
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    horizon_values = {}
+                for horizon in FOCUS_FORECAST_HORIZONS:
+                    if (forecast.id, horizon) in existing:
+                        continue
+                    target = forecast_at + timedelta(minutes=horizon)
+                    position = bisect_left(observation_times, target)
+                    if position >= len(ordered):
+                        continue
+                    observed_at, observed_price = ordered[position]
+                    if observed_at > target + timedelta(minutes=2):
+                        continue
+                    horizon_value = horizon_values.get(horizon, {})
+                    direction = str(horizon_value.get("direction", forecast.direction)).upper()
+                    expected_low = float(horizon_value.get("expected_low", forecast.forecast_low))
+                    expected_high = float(horizon_value.get("expected_high", forecast.forecast_high))
+                    return_percent = (observed_price / forecast.entry_price - 1) * 100
+                    minimum_move = max(float(forecast.spread_percent or 0.0), 0.15)
+                    if "STEIGEND" in direction:
+                        direction_hit = return_percent > minimum_move
+                    elif "FALLEND" in direction:
+                        direction_hit = return_percent < -minimum_move
+                    else:
+                        direction_hit = abs(return_percent) <= minimum_move
+                    session.add(
+                        FocusForecastOutcome(
+                            forecast_id=forecast.id,
+                            horizon_minutes=horizon,
+                            observed_at=observed_at,
+                            observed_price=observed_price,
+                            return_percent=return_percent,
+                            direction_hit=direction_hit,
+                            zone_hit=expected_low <= observed_price <= expected_high,
+                        )
+                    )
+                    resolved += 1
+        return resolved
+
+    def focus_forecast_metrics(
+        self,
+        *,
+        symbol: str,
+        horizon_minutes: int = 15,
+        limit: int = 200,
+        model_version: str | None = None,
+    ) -> dict[str, float | int | None]:
+        """Liefert rein vorwärts gemessene Kennzahlen ohne nachträgliche Neuberechnung."""
+
+        if horizon_minutes not in FOCUS_FORECAST_HORIZONS:
+            raise ValueError("Dieser Prognosehorizont wird nicht unterstützt.")
+        normalized = symbol.upper().strip()
+        with self.sessions() as session:
+            recorded_query = select(func.count()).select_from(FocusForecast).where(
+                FocusForecast.symbol == normalized
+            )
+            if model_version is not None:
+                recorded_query = recorded_query.where(FocusForecast.model_version == model_version)
+            recorded = int(session.scalar(recorded_query) or 0)
+            outcome_query = (
+                select(FocusForecastOutcome)
+                .join(FocusForecast, FocusForecast.id == FocusForecastOutcome.forecast_id)
+                .where(
+                    FocusForecast.symbol == normalized,
+                    FocusForecastOutcome.horizon_minutes == horizon_minutes,
+                )
+            )
+            if model_version is not None:
+                outcome_query = outcome_query.where(FocusForecast.model_version == model_version)
+            outcomes = list(
+                session.scalars(
+                    outcome_query.order_by(FocusForecastOutcome.observed_at.desc()).limit(limit)
+                )
+            )
+        completed = len(outcomes)
+        return {
+            "recorded": recorded,
+            "completed": completed,
+            "direction_accuracy": (
+                sum(outcome.direction_hit for outcome in outcomes) / completed * 100 if completed else None
+            ),
+            "zone_coverage": sum(outcome.zone_hit for outcome in outcomes) / completed * 100 if completed else None,
+            "average_return": (
+                sum(outcome.return_percent for outcome in outcomes) / completed if completed else None
+            ),
+        }
+
+    def focus_forecast_quality(
+        self,
+        *,
+        symbol: str,
+        horizon_minutes: int,
+        model_version: str | tuple[str, ...],
+        target_accuracy: float = 75.0,
+        min_calibration: int = 30,
+        min_verification: int = 30,
+    ) -> dict[str, float | int | bool | None]:
+        """Prueft eine Konfidenzschwelle chronologisch, bevor Prognosen freigegeben werden.
+
+        Die aelteren 60 Prozent bestimmen die Schwelle. Nur der spaetere, dabei
+        unangetastete Abschnitt entscheidet, ob die Zielquote wirklich erreicht
+        wurde. So kann eine nachtraeglich passend gewaehlte Schwelle nicht dieselben
+        Beobachtungen zugleich zum Auswaehlen und zum Belegen verwenden.
+        """
+
+        if horizon_minutes not in FOCUS_FORECAST_HORIZONS:
+            raise ValueError("Dieser Prognosehorizont wird nicht unterstützt.")
+        normalized = symbol.upper().strip()
+        versions = (model_version,) if isinstance(model_version, str) else model_version
+        with self.sessions() as session:
+            rows = session.execute(
+                select(FocusForecast, FocusForecastOutcome)
+                .join(
+                    FocusForecastOutcome,
+                    FocusForecast.id == FocusForecastOutcome.forecast_id,
+                )
+                .where(
+                    FocusForecast.symbol == normalized,
+                    FocusForecast.model_version.in_(versions),
+                    FocusForecastOutcome.horizon_minutes == horizon_minutes,
+                )
+                .order_by(FocusForecastOutcome.observed_at.asc())
+            ).all()
+
+        samples: list[tuple[float, bool]] = []
+        for forecast, outcome in rows:
+            try:
+                horizons = json.loads(forecast.horizons_json or "[]")
+                horizon = next(
+                    item
+                    for item in horizons
+                    if isinstance(item, dict)
+                    and int(item.get("minutes", 0)) == horizon_minutes
+                )
+                confidence = float(horizon["confidence"])
+            except (StopIteration, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if math.isfinite(confidence):
+                samples.append((confidence, bool(outcome.direction_hit)))
+
+        total = len(samples)
+        raw_accuracy = (
+            sum(hit for _confidence, hit in samples) / total * 100 if total else None
+        )
+        result: dict[str, float | int | bool | None] = {
+            "qualified": False,
+            "target_accuracy": float(target_accuracy),
+            "threshold": None,
+            "total": total,
+            "raw_accuracy": raw_accuracy,
+            "calibration_samples": 0,
+            "calibration_accuracy": None,
+            "verification_samples": 0,
+            "verification_accuracy": None,
+            "verification_lower_bound": None,
+            "coverage": 0.0,
+        }
+        required_total = min_calibration + min_verification
+        if total < required_total:
+            return result
+
+        split = max(int(total * 0.60), min_calibration)
+        split = min(split, total - min_verification)
+        calibration = samples[:split]
+        verification = samples[split:]
+        candidates: list[tuple[int, float, float]] = []
+        for threshold in sorted({confidence for confidence, _hit in calibration}):
+            selected = [hit for confidence, hit in calibration if confidence >= threshold]
+            if len(selected) < min_calibration:
+                continue
+            accuracy = sum(selected) / len(selected) * 100
+            if accuracy >= target_accuracy:
+                candidates.append((len(selected), threshold, accuracy))
+        if not candidates:
+            return result
+
+        calibration_samples, threshold, calibration_accuracy = max(
+            candidates,
+            key=lambda candidate: (candidate[0], -candidate[1]),
+        )
+        verified = [hit for confidence, hit in verification if confidence >= threshold]
+        verification_samples = len(verified)
+        verification_accuracy = (
+            sum(verified) / verification_samples * 100 if verification_samples else None
+        )
+        lower_bound = None
+        if verification_samples:
+            successes = sum(verified)
+            probability = successes / verification_samples
+            z = 1.959963984540054
+            denominator = 1 + z * z / verification_samples
+            center = probability + z * z / (2 * verification_samples)
+            margin = z * math.sqrt(
+                probability * (1 - probability) / verification_samples
+                + z * z / (4 * verification_samples**2)
+            )
+            lower_bound = max((center - margin) / denominator * 100, 0.0)
+
+        result.update(
+            {
+                "threshold": threshold,
+                "calibration_samples": calibration_samples,
+                "calibration_accuracy": calibration_accuracy,
+                "verification_samples": verification_samples,
+                "verification_accuracy": verification_accuracy,
+                "verification_lower_bound": lower_bound,
+                "coverage": verification_samples / len(verification) * 100,
+                "qualified": bool(
+                    verification_samples >= min_verification
+                    and verification_accuracy is not None
+                    and verification_accuracy >= target_accuracy
+                    and lower_bound is not None
+                    and lower_bound >= 60.0
+                ),
+            }
+        )
+        return result
+
+    def list_focus_forecasts(self, *, symbol: str = "RQ0", limit: int = 100) -> list[FocusForecast]:
+        with self.sessions() as session:
+            return list(
+                session.scalars(
+                    select(FocusForecast)
+                    .where(FocusForecast.symbol == symbol.upper().strip())
+                    .order_by(FocusForecast.forecast_at.desc())
+                    .limit(limit)
+                )
+            )
+
+    def focus_forecast_chart_points(
+        self,
+        *,
+        symbol: str = "RQ0",
+        horizon_minutes: int = 30,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        limit: int = 500,
+        model_version: str | tuple[str, ...] | None = None,
+    ) -> list[dict[str, object]]:
+        """Liefert frühere Horizont-Prognosen an ihrer damaligen Zielzeit für den Chart."""
+
+        if horizon_minutes not in FOCUS_FORECAST_HORIZONS:
+            raise ValueError("Dieser Prognosehorizont wird nicht unterstützt.")
+        normalized = symbol.upper().strip()
+        with self.sessions() as session:
+            query = select(FocusForecast).where(FocusForecast.symbol == normalized)
+            if model_version is not None:
+                if isinstance(model_version, str):
+                    query = query.where(FocusForecast.model_version == model_version)
+                else:
+                    query = query.where(FocusForecast.model_version.in_(model_version))
+            if start_at is not None:
+                query = query.where(
+                    FocusForecast.forecast_at
+                    >= _aware_utc(start_at) - timedelta(minutes=horizon_minutes)
+                )
+            if end_at is not None:
+                query = query.where(FocusForecast.forecast_at <= _aware_utc(end_at))
+            forecasts = list(
+                session.scalars(query.order_by(FocusForecast.forecast_at.desc()).limit(limit))
+            )
+            forecast_ids = [forecast.id for forecast in forecasts]
+            outcomes = (
+                {
+                    outcome.forecast_id: outcome
+                    for outcome in session.scalars(
+                        select(FocusForecastOutcome).where(
+                            FocusForecastOutcome.forecast_id.in_(forecast_ids),
+                            FocusForecastOutcome.horizon_minutes == horizon_minutes,
+                        )
+                    )
+                }
+                if forecast_ids
+                else {}
+            )
+
+        points: list[dict[str, object]] = []
+        for forecast in reversed(forecasts):
+            try:
+                horizons = json.loads(forecast.horizons_json or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            horizon = next(
+                (
+                    item
+                    for item in horizons
+                    if isinstance(item, dict) and int(item.get("minutes", 0)) == horizon_minutes
+                ),
+                None,
+            )
+            if horizon is None:
+                continue
+            forecast_at = _aware_utc(forecast.forecast_at)
+            outcome = outcomes.get(forecast.id)
+            points.append(
+                {
+                    "forecast_at": forecast_at,
+                    "target_at": forecast_at + timedelta(minutes=horizon_minutes),
+                    "entry_price": float(forecast.entry_price),
+                    "expected_price": float(horizon["expected_price"]),
+                    "expected_low": float(horizon["expected_low"]),
+                    "expected_high": float(horizon["expected_high"]),
+                    "direction": str(horizon["direction"]),
+                    "confidence": float(horizon["confidence"]),
+                    "released": bool(horizon.get("released", False)),
+                    "release_reason": str(horizon.get("release_reason", "Nur Prüfprognose")),
+                    "observed_at": _aware_utc(outcome.observed_at) if outcome else None,
+                    "observed_price": float(outcome.observed_price) if outcome else None,
+                    "direction_hit": bool(outcome.direction_hit) if outcome else None,
+                    "zone_hit": bool(outcome.zone_hit) if outcome else None,
+                    "model_version": forecast.model_version,
+                    "provider": forecast.provider,
+                }
+            )
+        return points
+
+    def update_focus_bot_status(
+        self,
+        *,
+        bot_key: str,
+        run_state: str,
+        signal_action: str,
+        signal_score: float,
+        account_state: str,
+        message: str,
+        heartbeat_at: datetime,
+        quote_at: datetime | None = None,
+        last_error: str = "",
+    ) -> FocusBotStatus:
+        """Schreibt genau eine Statuszeile, die App und LaunchAgent gemeinsam lesen."""
+
+        normalized_key = bot_key.strip()
+        if not normalized_key:
+            raise ValueError("Der Hintergrund-Bot benötigt einen eindeutigen Schlüssel.")
+        with self.sessions.begin() as session:
+            status = session.scalar(select(FocusBotStatus).where(FocusBotStatus.bot_key == normalized_key))
+            if status is None:
+                status = FocusBotStatus(bot_key=normalized_key)
+                session.add(status)
+            status.run_state = run_state
+            status.signal_action = signal_action
+            status.signal_score = signal_score
+            status.account_state = account_state
+            status.message = message
+            status.last_error = last_error
+            status.last_heartbeat = _aware_utc(heartbeat_at)
+            if quote_at is not None:
+                status.last_quote_at = _aware_utc(quote_at)
+            session.flush()
+            return status
+
+    def get_focus_bot_status(self, bot_key: str = "dwave-paper") -> FocusBotStatus | None:
+        with self.sessions() as session:
+            return session.scalar(select(FocusBotStatus).where(FocusBotStatus.bot_key == bot_key.strip()))
+
+    def upsert_news(self, items: list[NewsItem]) -> int:
+        """Speichert reale Meldungen idempotent und vereinigt deren Symbolbezug."""
+
+        inserted = 0
+        with self.sessions.begin() as session:
+            for item in items:
+                record = session.scalar(
+                    select(NewsRecord).where(NewsRecord.external_id == item.external_id)
+                )
+                related = set(item.related_symbols or (item.symbol,))
+                if record is None:
+                    record = NewsRecord(
+                        external_id=item.external_id,
+                        symbol=item.symbol,
+                        source=item.source,
+                        title=item.title,
+                        summary=item.summary,
+                        url=item.url,
+                        sentiment=item.sentiment,
+                        impact=item.impact,
+                        credibility=item.credibility,
+                        direct_relevance=item.direct_relevance,
+                        possibly_priced_in=item.possibly_priced_in,
+                        related_symbols=",".join(sorted(related)),
+                        published_at=item.published_at,
+                        is_demo=item.is_demo,
+                    )
+                    session.add(record)
+                    inserted += 1
+                else:
+                    related.update(value for value in record.related_symbols.split(",") if value)
+                    record.symbol = record.symbol or item.symbol
+                    record.source = item.source
+                    record.title = item.title
+                    record.summary = item.summary
+                    record.url = item.url
+                    record.sentiment = item.sentiment
+                    record.impact = item.impact
+                    record.credibility = item.credibility
+                    record.direct_relevance = record.direct_relevance or item.direct_relevance
+                    record.possibly_priced_in = item.possibly_priced_in
+                    record.related_symbols = ",".join(sorted(related))
+                    record.published_at = item.published_at
+                    record.is_demo = item.is_demo
+                    record.fetched_at = datetime.now(UTC)
+        return inserted
+
+    def list_news(
+        self,
+        *,
+        symbol: str | None = None,
+        limit: int = 100,
+        max_age_hours: int | None = None,
+    ) -> list[NewsRecord]:
+        with self.sessions() as session:
+            records = list(session.scalars(select(NewsRecord).order_by(NewsRecord.published_at.desc())))
+        normalized = symbol.upper().strip() if symbol else None
+        cutoff = datetime.now(UTC).timestamp() - max_age_hours * 3600 if max_age_hours else None
+        result: list[NewsRecord] = []
+        for record in records:
+            related = {value for value in record.related_symbols.split(",") if value}
+            if normalized and normalized not in related and record.symbol != normalized:
+                continue
+            published = record.published_at
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=UTC)
+            if cutoff is not None and published.timestamp() < cutoff:
+                continue
+            result.append(record)
+            if len(result) >= limit:
+                break
+        return result
+
+    def list_news_items(
+        self,
+        *,
+        symbol: str | None = None,
+        limit: int = 100,
+        max_age_hours: int | None = None,
+    ) -> list[NewsItem]:
+        return [
+            NewsItem(
+                external_id=record.external_id,
+                symbol=record.symbol,
+                title=record.title,
+                summary=record.summary,
+                source=record.source,
+                published_at=record.published_at,
+                sentiment=record.sentiment,
+                impact=record.impact,
+                credibility=record.credibility,
+                direct_relevance=record.direct_relevance,
+                possibly_priced_in=record.possibly_priced_in,
+                is_demo=record.is_demo,
+                url=record.url,
+                related_symbols=tuple(value for value in record.related_symbols.split(",") if value),
+            )
+            for record in self.list_news(
+                symbol=symbol,
+                limit=limit,
+                max_age_hours=max_age_hours,
+            )
+        ]
 
     def start_agent_run(self, run_key: str, symbols: list[str], provider: str) -> AgentRun:
         with self.sessions.begin() as session:

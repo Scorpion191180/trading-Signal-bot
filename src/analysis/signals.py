@@ -46,6 +46,7 @@ class SignalResult:
     trend: str
     data_problem: str | None
     zones: tuple[PriceZone, ...]
+    news_factor: float = 0.5
     experimental: bool = True
 
 
@@ -60,6 +61,7 @@ def _blocked(
     message: str,
     frame: pd.DataFrame | None,
     weights: ScoringWeights,
+    news_factor: float = 0.5,
 ) -> SignalResult:
     timestamp = datetime.now(UTC)
     if frame is not None and not frame.empty:
@@ -86,6 +88,7 @@ def _blocked(
         trend="Unklar",
         data_problem=message,
         zones=(),
+        news_factor=_bounded(news_factor),
     )
 
 
@@ -104,7 +107,15 @@ def analyze_signal(
     """Erzeugt ein erklärbares Signal; unzureichende Daten blockieren den Handel."""
 
     if frame is None or frame.empty or len(frame) < 200:
-        return _blocked(symbol, profile, provider, "Mindestens 200 abgeschlossene Kerzen erforderlich.", frame, weights)
+        return _blocked(
+            symbol,
+            profile,
+            provider,
+            "Mindestens 200 abgeschlossene Kerzen erforderlich.",
+            frame,
+            weights,
+            news_factor,
+        )
     data = add_indicators(frame)
     latest = data.iloc[-1]
     data_timestamp = pd.Timestamp(data.index[-1]).to_pydatetime()
@@ -117,12 +128,29 @@ def analyze_signal(
             f"Kursdaten sind {age_minutes:.0f} Minuten alt und damit veraltet.",
             data,
             weights,
+            news_factor,
         )
     required = ["ema_20", "ema_50", "rsi_14", "macd_hist", "atr_14", "relative_volume"]
     if any(pd.isna(latest[column]) for column in required):
-        return _blocked(symbol, profile, provider, "Technische Kennzahlen sind noch unvollständig.", data, weights)
+        return _blocked(
+            symbol,
+            profile,
+            provider,
+            "Technische Kennzahlen sind noch unvollständig.",
+            data,
+            weights,
+            news_factor,
+        )
     if float(latest["volume"]) <= 0:
-        return _blocked(symbol, profile, provider, "Kein belastbares Volumen für die letzte Kerze.", data, weights)
+        return _blocked(
+            symbol,
+            profile,
+            provider,
+            "Kein belastbares Volumen für die letzte Kerze.",
+            data,
+            weights,
+            news_factor,
+        )
 
     price = float(latest["close"])
     ema20 = float(latest["ema_20"])
@@ -188,6 +216,10 @@ def analyze_signal(
         positive.append(f"Relatives Volumen {relative_volume:.2f}")
     else:
         negative.append(f"Relatives Volumen zu gering ({relative_volume:.2f})")
+    if news_factor >= 0.6:
+        positive.append(f"Bestätigte aktuelle Nachrichtenlage positiv ({news_factor:.2f})")
+    elif news_factor <= 0.4:
+        negative.append(f"Bestätigte aktuelle Nachrichtenlage negativ ({news_factor:.2f})")
     positive.extend(pattern_positive)
     negative.extend(pattern_negative)
 
@@ -231,4 +263,5 @@ def analyze_signal(
         trend=trend,
         data_problem=None,
         zones=tuple(zones),
+        news_factor=_bounded(news_factor),
     )

@@ -1,0 +1,346 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+
+import pandas as pd
+import pytest
+
+from src.focus.analysis import PROFIT_EXHAUSTION_EVENT, IntradaySignal
+from src.focus.paper import (
+    PAPER_PORTFOLIO_NAME,
+    current_paper_account,
+    paper_order_events,
+    run_paper_account,
+)
+from src.focus.quote import LiveQuote
+
+
+def _quote(
+    bid: float,
+    ask: float,
+    timestamp: datetime,
+    *,
+    isin: str = "US26740W1099",
+) -> LiveQuote:
+    return LiveQuote(
+        provider="stock3 öffentlicher L&S-Kurs",
+        venue="Lang & Schwarz",
+        isin=isin,
+        bid=bid,
+        ask=ask,
+        bid_size=None,
+        ask_size=None,
+        last=bid,
+        high=ask,
+        low=bid,
+        change_percent=1.0,
+        volume=None,
+        fetched_at=timestamp,
+        refresh_seconds=10,
+        quoted_at=timestamp,
+    )
+
+
+def _signal(action: str, price: float) -> IntradaySignal:
+    return IntradaySignal(
+        action=action,
+        headline=action,
+        score=72.0 if action == "BUY" else 30.0,
+        strength="stark",
+        color="#22c55e" if action == "BUY" else "#ef4444",
+        current_price=price,
+        entry_low=price - 0.02 if action == "BUY" else None,
+        entry_high=price + 0.02 if action == "BUY" else None,
+        stop_loss=price - 0.25 if action == "BUY" else None,
+        target=price + 1.2 if action == "BUY" else None,
+        holding_period="5–30 Minuten",
+        reasons=(),
+        warning="",
+        data_age_minutes=0.0,
+        market_open=True,
+    )
+
+
+def test_focus_paper_account_starts_with_2000_and_books_real_spread_and_fee(store):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    buy_quote = _quote(18.0, 18.1, now)
+
+    bought = run_paper_account(store, buy_quote, _signal("BUY", buy_quote.bid), signal_at=now)
+
+    assert bought.initial_capital == 2_000.0
+    assert bought.state == "INVESTIERT"
+    assert 1_000.0 <= bought.cash < 2_000.0
+    assert bought.quantity > 0
+    assert bought.average_price == pytest.approx(18.1 + buy_quote.midpoint * 0.0005)
+    assert bought.total_fees == 1.0
+    assert bought.total_spread_cost > 0
+    assert bought.total_slippage_cost > 0
+    assert bought.result_eur < -1.0
+    portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
+    assert len(store.list_orders(portfolio.id)) == 1
+
+    duplicate = run_paper_account(store, buy_quote, _signal("BUY", buy_quote.bid), signal_at=now)
+    assert duplicate.quantity == bought.quantity
+    assert len(store.list_orders(portfolio.id)) == 1
+
+    sell_quote = _quote(18.4, 18.5, now + timedelta(minutes=5))
+    sold = run_paper_account(
+        store,
+        sell_quote,
+        _signal("SELL", sell_quote.bid),
+        signal_at=now + timedelta(minutes=5),
+    )
+    assert sold.state == "CASH"
+    assert sold.quantity == 0
+    assert sold.total_fees == 2.0
+    assert sold.total_transaction_costs > sold.total_fees
+    assert sold.completed_trades == 1
+    assert len(store.list_orders(portfolio.id)) == 2
+
+
+def test_focus_paper_account_rejects_target_that_does_not_cover_roundtrip_costs(store):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    quote = _quote(18.0, 18.05, now)
+    weak_target = replace(_signal("BUY", quote.bid), target=18.08)
+
+    account = run_paper_account(store, quote, weak_target, signal_at=now)
+
+    assert account.state == "WARTET · KOSTEN"
+    assert account.cash == 2_000.0
+    assert account.total_transaction_costs == 0
+
+
+def test_focus_paper_takes_profit_on_confirmed_overbought_reversal(store):
+    now = datetime(2026, 8, 14, 15, 56, tzinfo=UTC)
+    buy_quote = _quote(18.19, 18.23, now)
+    bought = run_paper_account(store, buy_quote, _signal("BUY", buy_quote.bid), signal_at=now)
+    assert bought.state == "INVESTIERT"
+
+    exit_at = now + timedelta(minutes=25)
+    exit_quote = _quote(18.49, 18.52, exit_at)
+    exhaustion = replace(
+        _signal("SELL", exit_quote.bid),
+        score=80.0,
+        structure_event=PROFIT_EXHAUSTION_EVENT,
+    )
+    sold = run_paper_account(store, exit_quote, exhaustion, signal_at=exit_at)
+
+    assert sold.state == "CASH"
+    assert sold.result_eur > 0
+    portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
+    assert "überkaufter Mikrotrend" in store.list_trades(portfolio.id)[0].exit_reason
+
+
+def test_focus_paper_account_requires_entry_confirmation(store):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    quote = _quote(18.0, 18.05, now)
+
+    account = run_paper_account(
+        store,
+        quote,
+        _signal("BUY", quote.bid),
+        signal_at=now,
+        entry_confirmed=False,
+    )
+
+    assert account.state == "WARTET · BESTÄTIGUNG"
+    assert account.quantity == 0
+
+
+def test_focus_paper_extends_profitable_trade_while_trend_remains_positive(store):
+    now = datetime(2026, 8, 14, 13, 0, tzinfo=UTC)
+    run_paper_account(store, _quote(18.0, 18.05, now), _signal("BUY", 18.0), signal_at=now)
+    rising = replace(
+        _signal("BUY", 18.30),
+        action="WAIT",
+        score=70.0,
+        forecast_direction="EHER STEIGEND",
+        external_context_score=55.0,
+    )
+
+    account = run_paper_account(
+        store,
+        _quote(18.30, 18.35, now + timedelta(minutes=31)),
+        rising,
+        signal_at=now + timedelta(minutes=31),
+    )
+
+    assert account.state == "INVESTIERT"
+
+
+def test_focus_paper_ends_extended_trade_when_trend_is_no_longer_confirmed(store):
+    now = datetime(2026, 8, 14, 13, 0, tzinfo=UTC)
+    run_paper_account(store, _quote(18.0, 18.05, now), _signal("BUY", 18.0), signal_at=now)
+    neutral = replace(
+        _signal("BUY", 18.30),
+        action="WAIT",
+        score=54.0,
+        forecast_direction="SEITWÄRTS",
+        external_context_score=50.0,
+    )
+
+    account = run_paper_account(
+        store,
+        _quote(18.30, 18.35, now + timedelta(minutes=31)),
+        neutral,
+        signal_at=now + timedelta(minutes=31),
+    )
+
+    assert account.state == "CASH"
+    portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
+    assert "Adaptive Haltedauer" in store.list_trades(portfolio.id)[0].exit_reason
+
+
+def test_focus_paper_keeps_hard_120_minute_safety_limit(store):
+    now = datetime(2026, 8, 14, 13, 0, tzinfo=UTC)
+    run_paper_account(store, _quote(18.0, 18.05, now), _signal("BUY", 18.0), signal_at=now)
+    rising = replace(
+        _signal("BUY", 18.30),
+        action="WAIT",
+        score=75.0,
+        forecast_direction="EHER STEIGEND",
+        external_context_score=60.0,
+    )
+
+    account = run_paper_account(
+        store,
+        _quote(18.30, 18.35, now + timedelta(minutes=121)),
+        rising,
+        signal_at=now + timedelta(minutes=121),
+    )
+
+    assert account.state == "CASH"
+    portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
+    assert "120 Minuten" in store.list_trades(portfolio.id)[0].exit_reason
+
+
+def test_focus_paper_account_pauses_after_an_exit(store):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    quote = _quote(18.0, 18.05, now)
+    run_paper_account(store, quote, _signal("BUY", quote.bid), signal_at=now)
+    exit_quote = _quote(19.3, 19.35, now + timedelta(minutes=6))
+    sold = run_paper_account(
+        store,
+        exit_quote,
+        _signal("SELL", exit_quote.bid),
+        signal_at=now + timedelta(minutes=6),
+    )
+    assert sold.state == "CASH"
+
+    reentry = run_paper_account(
+        store,
+        exit_quote,
+        _signal("BUY", exit_quote.bid),
+        signal_at=now + timedelta(minutes=10),
+    )
+    assert reentry.state == "WARTET · 15 MIN PAUSE"
+    assert reentry.quantity == 0
+
+
+def test_focus_paper_account_stops_after_four_daily_roundtrips(store):
+    now = datetime(2026, 8, 13, 7, 30, tzinfo=UTC)
+    for index in range(4):
+        entry_at = now + timedelta(minutes=index * 25)
+        price = 18.0 + index * 1.5
+        quote = _quote(price, price + 0.05, entry_at)
+        bought = run_paper_account(store, quote, _signal("BUY", quote.bid), signal_at=entry_at)
+        assert bought.state == "INVESTIERT"
+        exit_at = entry_at + timedelta(minutes=6)
+        exit_quote = _quote(price + 1.3, price + 1.35, exit_at)
+        sold = run_paper_account(
+            store,
+            exit_quote,
+            _signal("SELL", exit_quote.bid),
+            signal_at=exit_at,
+        )
+        assert sold.state == "CASH"
+
+    fifth_at = now + timedelta(minutes=100)
+    fifth_quote = _quote(24.0, 24.05, fifth_at)
+    blocked = run_paper_account(
+        store,
+        fifth_quote,
+        _signal("BUY", fifth_quote.bid),
+        signal_at=fifth_at,
+    )
+
+    assert blocked.state == "WARTET · TAGESLIMIT"
+    assert blocked.completed_trades == 4
+
+
+def test_focus_paper_account_waits_when_spread_is_too_wide(store):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    quote = _quote(18.0, 18.2, now)
+
+    account = run_paper_account(store, quote, _signal("BUY", quote.bid), signal_at=now)
+
+    assert account.state == "WARTET · SPREAD"
+    assert account.cash == 2_000.0
+    assert account.quantity == 0
+    assert account.total_transaction_costs == 0
+
+
+def test_focus_paper_account_never_executes_stale_market_signal(store):
+    now = datetime(2026, 8, 13, 21, 30, tzinfo=UTC)
+    quote = _quote(18.0, 18.05, now)
+    stale = replace(_signal("BUY", quote.bid), data_age_minutes=10.0)
+
+    account = run_paper_account(store, quote, stale, signal_at=now)
+
+    assert account.cash == 2_000.0
+    assert account.quantity == 0
+    portfolio = next(item for item in store.list_portfolios() if item.name == PAPER_PORTFOLIO_NAME)
+    assert store.list_orders(portfolio.id) == []
+
+
+def test_focus_paper_account_keeps_multiple_assets_separate(store):
+    now = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    dwave_quote = _quote(18.0, 18.05, now)
+    spacex_isin = "US84615Q1031"
+    spacex_quote = _quote(31.0, 31.05, now, isin=spacex_isin)
+
+    run_paper_account(
+        store,
+        dwave_quote,
+        _signal("BUY", dwave_quote.bid),
+        signal_at=now,
+    )
+    combined = run_paper_account(
+        store,
+        spacex_quote,
+        replace(
+            _signal("BUY", spacex_quote.bid),
+            stop_loss=30.5,
+            target=33.0,
+        ),
+        signal_at=now,
+        symbol=spacex_isin,
+    )
+
+    positions = store.list_positions(combined.portfolio_id)
+    assert {position.symbol for position in positions} == {"RQ0", spacex_isin}
+    assert combined.open_positions == 2
+    assert combined.market_value == pytest.approx(
+        sum(position.quantity * position.current_price for position in positions)
+    )
+    assert len(store.list_orders(combined.portfolio_id)) == 2
+
+    spacex_events = paper_order_events(
+        store,
+        combined.portfolio_id,
+        pd.Timestamp(now),
+        symbol=spacex_isin,
+    )
+    assert [event["action"] for event in spacex_events] == ["BUY"]
+
+    sold_spacex = run_paper_account(
+        store,
+        _quote(33.0, 33.05, now + timedelta(minutes=6), isin=spacex_isin),
+        _signal("SELL", 33.0),
+        signal_at=now + timedelta(minutes=6),
+        symbol=spacex_isin,
+    )
+    assert sold_spacex.open_positions == 1
+    assert [position.symbol for position in store.list_positions(combined.portfolio_id)] == ["RQ0"]
+    assert current_paper_account(store).state == "INVESTIERT"
