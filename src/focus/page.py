@@ -734,23 +734,37 @@ def _render_comparison_charts(
             if accuracy is not None
             else "Live-Messung startet mit dem nächsten aktiven Bot-Zyklus"
         )
-        forecast_arguments = {
-            "symbol": instrument.isin,
-            "horizon_minutes": forecast_horizon,
-            "start_at": pd.Timestamp(display_candles.index[0]).to_pydatetime(),
-            "end_at": pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
+        comparison_overlays = {
+            item
+            for item in overlays
+            if item in {
+                "EMA",
+                "Prognose",
+                "Prognosehistorie",
+                "Zonen",
+                "Signale",
+            }
         }
-        historical_forecasts = [
-            *store.focus_forecast_chart_points(
-                **forecast_arguments,
-                model_version=f"{PAPER_STRATEGY_VERSION}-replay",
-            ),
-            *store.focus_forecast_chart_points(
-                **forecast_arguments,
-                model_version=PAPER_STRATEGY_VERSION,
-            ),
-        ]
-        historical_forecasts.sort(key=lambda item: pd.Timestamp(item["target_at"]))
+        comparison_overlays.update(("Prognose", "Signale"))
+        historical_forecasts: list[dict[str, object]] = []
+        if "Prognosehistorie" in comparison_overlays:
+            forecast_arguments = {
+                "symbol": instrument.isin,
+                "horizon_minutes": forecast_horizon,
+                "start_at": pd.Timestamp(display_candles.index[0]).to_pydatetime(),
+                "end_at": pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
+            }
+            historical_forecasts = [
+                *store.focus_forecast_chart_points(
+                    **forecast_arguments,
+                    model_version=f"{PAPER_STRATEGY_VERSION}-replay",
+                ),
+                *store.focus_forecast_chart_points(
+                    **forecast_arguments,
+                    model_version=PAPER_STRATEGY_VERSION,
+                ),
+            ]
+            historical_forecasts.sort(key=lambda item: pd.Timestamp(item["target_at"]))
         st.markdown(
             '<div class="comparison-header">'
             f'<b>{escape(instrument.name)}</b><span>Lang &amp; Schwarz</span>'
@@ -760,10 +774,6 @@ def _render_comparison_charts(
             '</div>',
             unsafe_allow_html=True,
         )
-        comparison_overlays = {
-            item for item in overlays if item in {"EMA", "Prognose", "Zonen", "Signale"}
-        }
-        comparison_overlays.update(("Prognose", "Signale"))
         figure = day_signal_chart(
             display_candles,
             quote,
@@ -1445,19 +1455,34 @@ def _automatic_day_chart(store: DataStore) -> None:
                 )
                 overlays = st.pills(
                     "Einblendungen",
-                    options=("EMA", "Prognose", "Zonen", "Signale", "Position"),
+                    options=(
+                        "EMA",
+                        "Prognose",
+                        "Prognosehistorie",
+                        "Zonen",
+                        "Signale",
+                        "Position",
+                    ),
                     selection_mode="multi",
                     default=("Prognose", "Zonen", "Signale", "Position"),
                     key="dwave_chart_overlays",
                     width="stretch",
                 )
+                st.caption(
+                    "Prognose = cyanfarbener Verlauf ab jetzt. Prognosehistorie = "
+                    "höchstens 18 frühere Prüfungen: grüner Kreis richtig, rotes × falsch, "
+                    "grauer Ring noch offen. Die Historie bleibt für freie Kerzen standardmäßig aus."
+                )
                 forecast_horizon = st.select_slider(
-                    "Vergleich früherer Prognosen",
+                    "Horizont der Prognosehistorie",
                     options=(15, 30, 60, 120),
                     value=60,
                     format_func=lambda value: f"{value} Minuten",
                     key="dwave_forecast_horizon",
-                    help="Die violette Linie zeigt, welchen Kurs der Bot damals für diese spätere Zielzeit erwartet hatte.",
+                    help=(
+                        "Gilt nur für die zuschaltbare Prognosehistorie: grüner Kreis = "
+                        "Richtung richtig, rotes × = falsch, grauer Ring = noch nicht auswertbar."
+                    ),
                 )
     selected_minutes = int(candle_minutes or DEFAULT_INTERVAL[period_label])
     try:
@@ -1473,38 +1498,41 @@ def _automatic_day_chart(store: DataStore) -> None:
         selected_minutes = 5
         display_candles = resample_intraday_candles(candles, 5)
 
-    forecast_arguments = {
-        "symbol": DWAVE_INSTRUMENT.exchange_symbol,
-        "horizon_minutes": int(forecast_horizon),
-        "start_at": pd.Timestamp(display_candles.index[0]).to_pydatetime(),
-        "end_at": pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
-    }
-    try:
-        combined_forecasts = [
-            *store.focus_forecast_chart_points(
-                **forecast_arguments,
-                model_version=f"{PAPER_STRATEGY_VERSION}-replay",
-            ),
-            *store.focus_forecast_chart_points(
-                **forecast_arguments,
-                model_version=PAPER_STRATEGY_VERSION,
-            ),
+    active_overlays = set(overlays or ())
+    historical_forecasts: list[dict[str, object]] = []
+    if "Prognosehistorie" in active_overlays:
+        forecast_arguments = {
+            "symbol": DWAVE_INSTRUMENT.exchange_symbol,
+            "horizon_minutes": int(forecast_horizon),
+            "start_at": pd.Timestamp(display_candles.index[0]).to_pydatetime(),
+            "end_at": pd.Timestamp(display_candles.index[-1]).to_pydatetime(),
+        }
+        try:
+            combined_forecasts = [
+                *store.focus_forecast_chart_points(
+                    **forecast_arguments,
+                    model_version=f"{PAPER_STRATEGY_VERSION}-replay",
+                ),
+                *store.focus_forecast_chart_points(
+                    **forecast_arguments,
+                    model_version=PAPER_STRATEGY_VERSION,
+                ),
+            ]
+        except TypeError:
+            compatible_versions = {PAPER_STRATEGY_VERSION, f"{PAPER_STRATEGY_VERSION}-replay"}
+            combined_forecasts = [
+                item
+                for item in store.focus_forecast_chart_points(**forecast_arguments)
+                if item.get("model_version") in compatible_versions
+            ]
+        forecasts_by_target = {
+            pd.Timestamp(item["target_at"]): item
+            for item in combined_forecasts
+        }
+        historical_forecasts = [
+            forecasts_by_target[target]
+            for target in sorted(forecasts_by_target)
         ]
-    except TypeError:
-        compatible_versions = {PAPER_STRATEGY_VERSION, f"{PAPER_STRATEGY_VERSION}-replay"}
-        combined_forecasts = [
-            item
-            for item in store.focus_forecast_chart_points(**forecast_arguments)
-            if item.get("model_version") in compatible_versions
-        ]
-    forecasts_by_target = {
-        pd.Timestamp(item["target_at"]): item
-        for item in combined_forecasts
-    }
-    historical_forecasts = [
-        forecasts_by_target[target]
-        for target in sorted(forecasts_by_target)
-    ]
 
     chart_key = _main_chart_key(period_label, selected_minutes, str(chart_style or "Kerzen"))
     zoom_key = f"{chart_key}_zoom"
@@ -1527,7 +1555,7 @@ def _automatic_day_chart(store: DataStore) -> None:
         period_label=period_label,
         data_is_resampled=True,
         chart_style=str(chart_style or "Kerzen"),
-        overlays=set(overlays or ()),
+        overlays=active_overlays,
         historical_forecasts=historical_forecasts,
         forecast_horizon_minutes=int(forecast_horizon),
         forecast_quality=quality_by_horizon,

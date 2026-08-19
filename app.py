@@ -11,7 +11,7 @@ from src.config import AppSettings
 from src.database import DataStore, create_database, create_session_factory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-SERVICE_SCHEMA_VERSION = "1.9-partial-live-candles"
+SERVICE_SCHEMA_VERSION = "2.0-clear-forecast-layers"
 st.set_page_config(
     page_title="D-Wave Kurzfrist-Signal",
     page_icon="⚡",
@@ -29,8 +29,8 @@ def _load_focus_page():
         "src.focus.analysis",
         "src.focus.stock3",
         "src.focus.paper",
-        "src.focus.replay",
         "src.focus.quality",
+        "src.focus.replay",
         "src.focus.charts",
         "src.focus.page",
     )

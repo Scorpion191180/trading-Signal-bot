@@ -266,25 +266,41 @@ def test_historical_forecast_is_drawn_at_its_target_time():
         signal,
         FocusPosition(),
         [],
+        overlays={"Prognose", "Prognosehistorie"},
         historical_forecasts=history,
         forecast_horizon_minutes=60,
     )
 
-    forecast_trace = next(trace for trace in figure.data if trace.name.startswith("Ziel nach 60 Min"))
-    current_trace = next(trace for trace in figure.data if trace.name == "Aktuelle Prognose")
+    forecast_trace = next(trace for trace in figure.data if trace.name == "Richtig")
+    current_trace = next(trace for trace in figure.data if trace.name == "Prognose ab jetzt")
     assert pd.Timestamp(forecast_trace.x[0]).tz_convert("UTC") == pd.Timestamp(target_at)
-    assert forecast_trace.marker.color[0] == "#22c55e"
-    assert "1/1 (100 %)" in forecast_trace.name
-    assert forecast_trace.line.width >= 3
+    assert forecast_trace.marker.color == "#22c55e"
+    assert forecast_trace.mode == "markers"
     assert forecast_trace.marker.size >= 6
-    issued_trace = next(trace for trace in figure.data if trace.name.startswith("Erstellt"))
-    assert pd.Timestamp(issued_trace.x[0]).tz_convert("UTC") == pd.Timestamp(history[0]["forecast_at"])
+    assert not any(trace.name.startswith("Erstellt") for trace in figure.data)
     assert current_trace.line.width >= 2.5
     assert current_trace.line.dash == "solid"
-    assert current_trace.marker.size >= 8
+    assert current_trace.marker.size >= 7
+    uncertainty_trace = next(trace for trace in figure.data if trace.name == "Möglicher Bereich")
+    assert uncertainty_trace.fill == "tonexty"
+    assert uncertainty_trace.showlegend is False
     assert pd.Timestamp(figure.layout.xaxis.range[1]) > pd.Timestamp(current_trace.x[-1])
     assert float(figure.layout.yaxis.range[0]) < 16.75
     assert float(figure.layout.yaxis.range[1]) > 17.85
+
+    without_history = day_signal_chart(
+        candles,
+        quote,
+        signal,
+        FocusPosition(),
+        [],
+        overlays={"Prognose"},
+        historical_forecasts=history,
+        forecast_horizon_minutes=60,
+    )
+    assert not {"Richtig", "Falsch", "Noch offen"}.intersection(
+        trace.name for trace in without_history.data
+    )
 
     zoomed = day_signal_chart(
         candles,

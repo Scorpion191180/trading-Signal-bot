@@ -148,7 +148,7 @@ def day_signal_chart(
                 y=visible["close"].ewm(span=8, adjust=False).mean(),
                 mode="lines",
                 name="EMA 8",
-                line={"color": "#38bdf8", "width": 1.4},
+                line={"color": "rgba(56,189,248,.62)", "width": 1.0},
             )
         )
         figure.add_trace(
@@ -157,7 +157,7 @@ def day_signal_chart(
                 y=visible["close"].ewm(span=21, adjust=False).mean(),
                 mode="lines",
                 name="EMA 21",
-                line={"color": "#f59e0b", "width": 1.4},
+                line={"color": "rgba(245,158,11,.58)", "width": 1.0},
             )
         )
     current_x = visible.index[-1]
@@ -178,25 +178,14 @@ def day_signal_chart(
         fillcolor="rgba(56,189,248,.08)",
         line_width=0,
     )
-    if "Prognose" in active_overlays and signal.forecast_low is not None and signal.forecast_high is not None:
-        figure.add_hrect(
-            y0=signal.forecast_low,
-            y1=signal.forecast_high,
-            fillcolor="rgba(56,189,248,.055)",
-            line={"color": "rgba(56,189,248,.38)", "width": 1, "dash": "dot"},
-        )
     if "Prognose" in active_overlays and signal.trend_forecasts and period_label == "Intraday":
         forecast_x = [current_x] + [
             _trading_minute_target(current_x, int(item.minutes))
             for item in signal.trend_forecasts
         ]
         forecast_y = [quote.bid] + [item.expected_price for item in signal.trend_forecasts]
-        upper_error = [0.0] + [
-            item.expected_high - item.expected_price for item in signal.trend_forecasts
-        ]
-        lower_error = [0.0] + [
-            item.expected_price - item.expected_low for item in signal.trend_forecasts
-        ]
+        forecast_low = [quote.bid] + [item.expected_low for item in signal.trend_forecasts]
+        forecast_high = [quote.bid] + [item.expected_high for item in signal.trend_forecasts]
         hover_text = ["Aktueller L&S Bid"]
         for item in signal.trend_forecasts:
             validation = quality_by_horizon.get(item.minutes, {})
@@ -215,47 +204,50 @@ def day_signal_chart(
         figure.add_trace(
             go.Scatter(
                 x=forecast_x,
+                y=forecast_low,
+                mode="lines",
+                name="Prognose-Untergrenze",
+                line={"width": 0, "color": "rgba(34,211,238,0)"},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=forecast_x,
+                y=forecast_high,
+                mode="lines",
+                name="Möglicher Bereich",
+                line={"width": 0, "color": "rgba(34,211,238,0)"},
+                fill="tonexty",
+                fillcolor="rgba(34,211,238,.11)",
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=forecast_x,
                 y=forecast_y,
-                mode="lines+markers+text",
-                name="Aktuelle Prognose",
-                text=[""] + [f"{item.minutes}m" for item in signal.trend_forecasts],
-                textposition=("top center", "top left", "bottom left", "top center", "bottom center", "middle right"),
-                textfont={"size": 11, "color": path_color},
+                mode="lines+markers",
+                name="Prognose ab jetzt",
                 line={
                     "color": path_color,
-                    "width": 4.2,
+                    "width": 3.0,
                     "dash": "solid",
                 },
                 marker={
-                    "size": 10,
+                    "size": 7,
                     "color": path_color,
-                    "line": {"width": 1.5, "color": "#ecfeff"},
-                },
-                error_y={
-                    "type": "data",
-                    "symmetric": False,
-                    "array": upper_error,
-                    "arrayminus": lower_error,
-                    "color": "rgba(34,211,238,.62)",
-                    "thickness": 1.5,
-                    "width": 4,
+                    "line": {"width": 1.0, "color": "#ecfeff"},
                 },
                 hovertext=hover_text,
                 hovertemplate="%{hovertext}<extra></extra>",
             )
         )
-    forecast_points = historical_forecasts or []
-    if "Prognose" in active_overlays and forecast_points:
+    forecast_points = list(historical_forecasts or [])[-18:]
+    if "Prognosehistorie" in active_overlays and forecast_points:
         target_times = [pd.Timestamp(item["target_at"]).tz_convert("Europe/Berlin") for item in forecast_points]
-        expected_prices = [float(item["expected_price"]) for item in forecast_points]
-        marker_colors = [
-            "#22c55e"
-            if item.get("direction_hit") is True
-            else "#ef4444"
-            if item.get("direction_hit") is False
-            else "#94a3b8"
-            for item in forecast_points
-        ]
         hover_text = []
         for item, target_at in zip(forecast_points, target_times, strict=True):
             forecast_at = pd.Timestamp(item["forecast_at"]).tz_convert("Europe/Berlin")
@@ -276,67 +268,49 @@ def day_signal_chart(
                 f"Zone {float(item['expected_low']):.3f}–{float(item['expected_high']):.3f} €<br>"
                 f"Tatsächlich {observed_text}<br>{verdict}"
             )
-        completed = [item for item in forecast_points if item.get("direction_hit") is not None]
-        raw_hits = sum(item.get("direction_hit") is True for item in completed)
-        raw_accuracy = raw_hits / len(completed) * 100 if completed else None
-        comparison_name = f"Ziel nach {forecast_horizon_minutes} Min"
-        model_versions = {str(item.get("model_version", "")) for item in forecast_points}
-        if len(model_versions) == 1:
-            version = next(iter(model_versions)).replace("focus-market-", "")
-            if version:
-                comparison_name += f" · {version}"
-        if raw_accuracy is not None:
-            comparison_name += f" · Treffer {raw_hits}/{len(completed)} ({raw_accuracy:.0f} %)"
-        figure.add_trace(
-            go.Scatter(
-                x=target_times,
-                y=expected_prices,
-                mode="lines+markers",
-                name=comparison_name,
-                line={"color": "#ddd6fe", "width": 4.0, "dash": "dash"},
-                marker={
-                    "size": 6,
-                    "color": marker_colors,
-                    "line": {"width": 0.9, "color": "#f5f3ff"},
-                },
-                text=hover_text,
-                hovertemplate="%{text}<extra></extra>",
-            )
-        )
-        issued_times = [
-            pd.Timestamp(item["forecast_at"]).tz_convert("Europe/Berlin")
-            for item in forecast_points
-        ]
-        figure.add_trace(
-            go.Scatter(
-                x=issued_times,
+        for outcome, name, color, symbol in (
+            (True, "Richtig", "#22c55e", "circle"),
+            (False, "Falsch", "#ef4444", "x"),
+            (None, "Noch offen", "#94a3b8", "circle-open"),
+        ):
+            indices = [
+                index
+                for index, item in enumerate(forecast_points)
+                if item.get("direction_hit") is outcome
+            ]
+            if not indices:
+                continue
+            figure.add_trace(
+                go.Scatter(
+                    x=[target_times[index] for index in indices],
                 y=[
-                    float(item.get("entry_price", item["expected_price"]))
-                    for item in forecast_points
-                ],
-                mode="markers",
-                name=f"Erstellt · Ziel +{forecast_horizon_minutes} Min",
-                marker={
-                    "size": 5,
-                    "symbol": "diamond-open",
-                    "color": "#94a3b8",
-                    "line": {"width": 1.0, "color": "#cbd5e1"},
-                },
-                text=[
-                    f"Hier um {issued_at:%H:%M} erstellt<br>"
-                    f"Zielpunkt um {target_at:%H:%M}"
-                    for issued_at, target_at in zip(issued_times, target_times, strict=True)
-                ],
-                hovertemplate="%{text}<extra></extra>",
+                        float(
+                            forecast_points[index]["observed_price"]
+                            if forecast_points[index].get("observed_price") is not None
+                            else forecast_points[index]["expected_price"]
+                        )
+                        for index in indices
+                    ],
+                    mode="markers",
+                    name=name,
+                    marker={
+                        "size": 6,
+                        "color": color,
+                        "symbol": symbol,
+                        "opacity": 0.78,
+                        "line": {"width": 0.7, "color": color},
+                    },
+                    text=[hover_text[index] for index in indices],
+                    hovertemplate="%{text}<extra></extra>",
+                )
             )
-        )
     if "Zonen" in active_overlays:
         if signal.demand_low is not None and signal.demand_high is not None:
             figure.add_hrect(
                 y0=signal.demand_low,
                 y1=signal.demand_high,
-                fillcolor="rgba(34,197,94,.10)",
-                line={"color": "rgba(34,197,94,.55)", "width": 1},
+                fillcolor="rgba(34,197,94,.06)",
+                line={"color": "rgba(34,197,94,.40)", "width": 0.8},
                 annotation_text="Nachfrage / Orderblock",
                 annotation_position="bottom right",
             )
@@ -356,10 +330,10 @@ def day_signal_chart(
             for item in scan_candlestick_patterns(
                 visible,
                 lookback=180,
-                minimum_confidence=72,
+                minimum_confidence=78,
             )
             if item.direction in {"BULLISH", "BEARISH"}
-        )[-8:]
+        )[-4:]
     for direction, label, color, symbol, text_position in (
         ("BULLISH", "Bullisches Kerzenmuster", "#22c55e", "triangle-up", "bottom center"),
         ("BEARISH", "Bärisches Kerzenmuster", "#ef4444", "triangle-down", "top center"),
@@ -374,10 +348,10 @@ def day_signal_chart(
                 mode="markers",
                 name=label,
                 marker={
-                    "size": 12,
+                    "size": 9,
                     "color": color,
                     "symbol": symbol,
-                    "line": {"width": 1.2, "color": "#f8fafc"},
+                    "line": {"width": 0.8, "color": "#f8fafc"},
                 },
                 text=[
                     f"<b>{item.name}</b><br>{item.context}<br>"
@@ -386,6 +360,7 @@ def day_signal_chart(
                 ],
                 hovertemplate="%{text}<extra></extra>",
                 textposition=text_position,
+                showlegend=False,
             )
         )
 
@@ -402,17 +377,17 @@ def day_signal_chart(
             go.Scatter(
                 x=[current_x],
                 y=[quote.bid],
-                mode="markers+text",
+                mode="markers",
                 name="Aktuelles Botsignal",
-                text=[signal_label],
-                textposition="top center" if signal.action != "SELL" else "bottom center",
                 marker={
-                    "size": 16,
+                    "size": 12,
                     "color": signal_marker_color,
                     "symbol": signal_symbol,
-                    "line": {"width": 1.5, "color": "white"},
+                    "line": {"width": 1.2, "color": "white"},
                 },
-                hovertext=[f"{signal.headline}<br>{signal.structure_event}"],
+                hovertext=[
+                    f"<b>{signal_label}</b><br>{signal.headline}<br>{signal.structure_event}"
+                ],
                 hovertemplate="%{hovertext}<extra></extra>",
                 showlegend=False,
             )
@@ -439,11 +414,20 @@ def day_signal_chart(
             go.Scatter(
                 x=[pd.Timestamp(event["timestamp"]).tz_convert("Europe/Berlin") for event in matching],
                 y=[float(event["price"]) for event in matching],
-                mode="markers+text",
+                mode="markers",
                 name=label,
-                text=[label] * len(matching),
-                textposition="top center" if action != "SELL" else "bottom center",
-                marker={"size": 15, "color": color, "symbol": symbol, "line": {"width": 1, "color": "white"}},
+                marker={
+                    "size": 10,
+                    "color": color,
+                    "symbol": symbol,
+                    "line": {"width": 0.8, "color": "white"},
+                },
+                hovertext=[
+                    f"<b>{label}</b><br>{float(event['price']):.3f} €"
+                    for event in matching
+                ],
+                hovertemplate="%{hovertext}<extra></extra>",
+                showlegend=False,
             )
         )
 
@@ -508,8 +492,8 @@ def day_signal_chart(
             x1=box_end,
             y0=box_entry,
             y1=float(signal.target),
-            fillcolor="rgba(34,197,94,.16)",
-            line={"color": "rgba(34,197,94,.80)", "width": 1.2},
+            fillcolor="rgba(34,197,94,.10)",
+            line={"color": "rgba(34,197,94,.65)", "width": 0.9},
             layer="below",
         )
         figure.add_shape(
@@ -520,8 +504,8 @@ def day_signal_chart(
             x1=box_end,
             y0=float(signal.stop_loss),
             y1=box_entry,
-            fillcolor="rgba(239,68,68,.16)",
-            line={"color": "rgba(239,68,68,.80)", "width": 1.2},
+            fillcolor="rgba(239,68,68,.10)",
+            line={"color": "rgba(239,68,68,.65)", "width": 0.9},
             layer="below",
         )
         figure.add_annotation(
@@ -655,14 +639,9 @@ def day_signal_chart(
             for item in signal.trend_forecasts
             for value in (item.expected_low, item.expected_high)
         )
-    if "Prognose" in active_overlays and forecast_points:
+    if "Prognosehistorie" in active_overlays and forecast_points:
         forecast_times.extend(
             pd.Timestamp(item["target_at"]).tz_convert("Europe/Berlin") for item in forecast_points
-        )
-        forecast_bounds.extend(
-            value
-            for item in forecast_points
-            for value in (float(item["expected_low"]), float(item["expected_high"]))
         )
 
     time_candidates = [pd.Timestamp(visible.index[0]), pd.Timestamp(visible.index[-1]), *forecast_times]
@@ -772,9 +751,18 @@ def day_signal_chart(
         showlegend="EMA" in active_overlays
         or (
             "Prognose" in active_overlays
-            and (bool(forecast_points) or bool(signal.trend_forecasts))
-        ),
-        legend={"orientation": "h", "yanchor": "top", "y": 0.90, "x": 0.01},
+            and bool(signal.trend_forecasts)
+        )
+        or ("Prognosehistorie" in active_overlays and bool(forecast_points)),
+        legend={
+            "orientation": "h",
+            "yanchor": "top",
+            "y": 0.97,
+            "xanchor": "right",
+            "x": 0.99,
+            "bgcolor": "rgba(17,23,25,.72)",
+            "font": {"size": 9},
+        },
         uirevision=f"{chart_identity}-professional-{period_label}-{candle_minutes}-{chart_style}",
         plot_bgcolor="#12191c",
         paper_bgcolor="#12191c",
